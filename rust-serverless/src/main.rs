@@ -32,9 +32,39 @@ static GRAPH: Lazy<&'static ArchivedCsrGraph> = Lazy::new(|| {
     // Leak the mmap to get a 'static lifetime.
     let mmap_static: &'static [u8] = Box::leak(Box::new(mmap));
 
-    // Use `access` for validation. Panics on failure, which is common for lazy_static.
-    // For production, you might want more graceful error handling.
-    access::<ArchivedCsrGraph, rancor::Error>(mmap_static).expect("Failed to validate archived graph.")
+    #[cfg(target_os = "linux")]
+    {
+        log::info!("Warming up page cache in the background using madvise...");
+        // Re-construct the Mmap temporarily just to call advise, being careful not to drop it and unmap.
+        // Actually, memmap2's `advise` requires `&Mmap`. We can just use `libc::madvise` directly on the slice.
+        unsafe {
+            let addr = mmap_static.as_ptr() as *mut libc::c_void;
+            let len = mmap_static.len();
+            if libc::madvise(addr, len, libc::MADV_WILLNEED) != 0 {
+                log::warn!("madvise(MADV_WILLNEED) failed");
+            } else {
+                log::info!("madvise successfully hinted the kernel to preload the graph.");
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Fallback for non-Linux: Spawn a background thread to sequentially warm up the page cache
+        std::thread::spawn(move || {
+            log::info!("Warming up page cache in the background (fallback)...");
+            let mut _sink = 0;
+            // Read 1 byte every 4KB (standard OS page size) to force a page fault
+            for i in (0..mmap_static.len()).step_by(4096) {
+                _sink ^= unsafe { std::ptr::read_volatile(&mmap_static[i]) };
+            }
+            log::info!("Page cache warm-up complete! Warmed {} MB.", mmap_static.len() / 1024 / 1024);
+        });
+    }
+
+    // Use `access_unchecked` to bypass validation. This allows the host Linux Kernel's
+    // page cache to lazy-load nodes without initially loading the entire graph file into RAM.
+    unsafe { rkyv::access_unchecked::<ArchivedCsrGraph>(mmap_static) }
 });
 
 

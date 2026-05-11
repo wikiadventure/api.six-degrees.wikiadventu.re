@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Six Degrees of Wikipedia API Orchestrator Monthly
+
+[Timer]
+# Runs on the 1st of every month at 02:00 AM server time
+OnCalendar=*-*-01 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
