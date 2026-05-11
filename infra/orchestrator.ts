@@ -29,8 +29,17 @@ async function buildDockerImage(lang: string): Promise<string> {
   console.log(`[${lang}] Building rust-serverless Docker image...`);
   const imageTag = `${DOCKER_IMAGE_PREFIX}-${lang}:latest`;
   
+  // Create a hardlink of the dedicated graph to 'graph.rkyv' in the root folder.
+  // This satisfies the Dockerfile COPY command without sending other languages' massive files 
+  // into the Docker daemon build context, saving tons of time and RAM/Disk space!
+  await $`cd .. && ln -f graphs/${lang}graph.rkyv graph.rkyv`;
+
   // Assuming the build context needs to be the root to access rust-serverless and graph.rkyv
   await $`cd .. && docker build -f dockerfile.serverless -t ${imageTag} --build-arg WIKI_LANG=${lang} .`;
+  
+  // Cleanup the hard link so the working directory stays clean
+  await $`cd .. && rm graph.rkyv`;
+
   return imageTag;
 }
 

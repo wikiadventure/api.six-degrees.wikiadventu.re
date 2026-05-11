@@ -960,9 +960,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nSerializing graph...");
     let bytes = to_bytes::<Error>(&graph).expect("Graph RKYV serialization failed");
-    let mut file = File::create("graph.rkyv")?;
-    file.write_all(&bytes).expect("Failed to write graph to graph.rkyv");
-    println!("Graph serialized to graph.rkyv");
+    
+    // Create the graphs directory if it doesn't exist
+    std::fs::create_dir_all("graphs").unwrap_or_default();
+    
+    let path = format!("graphs/{}graph.rkyv", *WIKI_LANG);
+    let mut file = File::create(&path)?;
+    file.write_all(&bytes).unwrap_or_else(|_| panic!("Failed to write graph to {}", path));
+    println!("Graph serialized to {}", path);
 
     Ok(())
 }
