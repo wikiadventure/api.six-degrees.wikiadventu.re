@@ -13,6 +13,23 @@ async function buildDataProcessor() {
 }
 
 /**
+ * Step 0.5: Login to Docker Hub
+ */
+async function loginToDocker() {
+  const user = process.env.DOCKER_USERNAME;
+  const pat = process.env.DOCKER_PAT;
+  
+  if (!user || !pat) {
+    console.warn("DOCKER_USERNAME or DOCKER_PAT not set in environment. Skipping docker login...");
+    return;
+  }
+  
+  console.log(`[Docker] Logging into Docker Hub as ${user}...`);
+  // Using shell piping to securely pass the password via stdin
+  await $`echo ${pat} | docker login --username ${user} --password-stdin`;
+}
+
+/**
  * Step 1: Run the Data Processor to generate graph.rkyv for a given language
  */
 async function generateGraph(lang: string) {
@@ -109,6 +126,7 @@ async function runPipeline() {
   console.log("=== Starting Six Degrees of Wikipedia Pipeline ===");
 
   try {
+    await loginToDocker();
     await buildDataProcessor();
   } catch (error) {
     console.error("[ERROR] Failed to build the data processor:", error);

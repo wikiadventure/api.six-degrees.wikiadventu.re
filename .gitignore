@@ -1,6 +1,7 @@
 .env
 .env.docker
 .env.prod
+.env.secrets
 sql-dump-to-rust/target
 sql-dump-to-rust/cache
 rust-serverless/target

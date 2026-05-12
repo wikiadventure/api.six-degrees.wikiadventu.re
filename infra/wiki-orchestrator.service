@@ -15,6 +15,7 @@ WorkingDirectory=/opt/wikiadventu.re/api.six-degrees.wikiadventu.re/infra
 Environment="PATH=/home/wiki-builder/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # ExecStart needs the absolute path to the bun shim managed by mise
+EnvironmentFile=/opt/wikiadventu.re/api.six-degrees.wikiadventu.re/infra/.env.secrets
 ExecStart=/home/wiki-builder/.local/share/mise/shims/bun run orchestrator.ts
 
 # To ensure the process has permissions and doesn't get OOM-killed aggressively
