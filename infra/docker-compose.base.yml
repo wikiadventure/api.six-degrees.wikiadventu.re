@@ -1,3 +1,7 @@
+networks:
+  web:
+    name: web
+
 services:
   traefik:
     image: "traefik:v3.7.0"
@@ -24,7 +28,3 @@ services:
     restart: unless-stopped
     networks:
       - web
-
-networks:
-  web:
-    name: web
