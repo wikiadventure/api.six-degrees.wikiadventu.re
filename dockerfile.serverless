@@ -1,17 +1,17 @@
-FROM alpine AS builder
+FROM rust:1.84-slim AS builder
+
+WORKDIR /usr/src/app
+COPY rust-serverless ./rust-serverless
+
+WORKDIR /usr/src/app/rust-serverless
+RUN cargo build --release
+
+# Distroless 'cc' image includes glibc and libgcc, required by standard Rust builds
+FROM gcr.io/distroless/cc-debian12:nonroot
 
 WORKDIR /app
-COPY rust-serverless /app/rust-serverless
+COPY --from=builder /usr/src/app/rust-serverless/target/release/rust-serverless /app/rust-serverless
 COPY graph.rkyv /app/graph.rkyv
-
-# Ensure the binary has executable permissions
-RUN chmod +x /app/rust-serverless
-
-FROM gcr.io/distroless/base:nonroot
-
-COPY --from=builder /app /app
-
-WORKDIR /app
 
 CMD ["./rust-serverless"]
 
