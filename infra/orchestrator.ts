@@ -1,5 +1,6 @@
 import { $ } from "bun";
-import { rm } from "node:fs/promises";
+import { rm, mkdir, symlink } from "node:fs/promises";
+import { join } from "node:path";
 import type { DumpStatus } from "./types/dumpstatus";
 
 const LANGUAGES = ["oc", "eo"] as const; 
@@ -28,7 +29,7 @@ async function loadMetadata(): Promise<Metadata> {
 
 async function saveMetadata(metadata: Metadata) {
   // Ensure directory exists
-  await $`mkdir -p ../graphs`;
+  await mkdir("../graphs", { recursive: true });
   await Bun.write(METADATA_PATH, JSON.stringify(metadata, null, 2));
 }
 
@@ -131,7 +132,12 @@ async function buildAndPushDockerImages(lang: Language, date: string) {
   console.log(`[${lang}] Preparing Docker environment...`);
   
   // Link the giant graph memory so Docker can pick it up
-  await $`cd .. && ln -f graphs/${lang}/${date}/graph.rkyv graph.rkyv`;
+  const targetPath = join("..", "graphs", lang, date, "graph.rkyv");
+  const linkPath = join("..", "graph.rkyv");
+  
+  // Clean up any existing link first
+  await rm(linkPath, { force: true });
+  await symlink(join("graphs", lang, date, "graph.rkyv"), linkPath);
 
   try {
     const genericTag = `${DOCKER_IMAGE_PREFIX}-${lang}:${date}`;
@@ -153,12 +159,12 @@ async function buildAndPushDockerImages(lang: Language, date: string) {
     await $`cd .. && docker build -f dockerfile.graph-api -t ${localOptimizedTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS=${optFlags} .`;
   } finally {
     // Cleanup the hard link regardless of build success
-    await $`cd .. && rm -f graph.rkyv`;
+    await rm(linkPath, { force: true });
   }
 }
 
 
-// region: Docker build & push
+// region: Gen Docker compose
 /**
  * Generate a complete docker-compose.yml from the base and the target languages
  */
