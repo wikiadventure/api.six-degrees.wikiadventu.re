@@ -92,7 +92,8 @@ async function getLatestReadyDumpDate(lang: Language): Promise<string | null> {
  */
 async function buildDataProcessor() {
   console.log("Building data processor (rust-graph-builder)...");
-  await $`cd .. && cargo build --release --manifest-path=rust-graph-builder/Cargo.toml`;
+  const optFlags = process.env.OPTIMIZED_RUSTFLAGS || "-C target-cpu=znver2 -C target-feature=+aes,+avx2,+bmi1,+bmi2";
+  await $`cd .. && RUSTFLAGS=${optFlags} cargo build --release --manifest-path=rust-graph-builder/Cargo.toml`;
 }
 
 // region: Login to docker
