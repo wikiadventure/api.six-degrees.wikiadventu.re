@@ -1,5 +1,5 @@
 import { $ } from "bun";
-import { rm, mkdir, symlink } from "node:fs/promises";
+import { rm, mkdir, link } from "node:fs/promises";
 import { join } from "node:path";
 import type { DumpStatus } from "./types/dumpstatus";
 
@@ -137,7 +137,7 @@ async function buildAndPushDockerImages(lang: Language, date: string) {
   
   // Clean up any existing link first
   await rm(linkPath, { force: true });
-  await symlink(join("graphs", lang, date, "graph.rkyv"), linkPath);
+  await link(targetPath, linkPath);
 
   try {
     const genericTag = `${DOCKER_IMAGE_PREFIX}-${lang}:${date}`;
