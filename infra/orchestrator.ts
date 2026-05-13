@@ -40,32 +40,32 @@ async function generateGraph(lang: string) {
 }
 
 /**
- * Step 2: Build the Serverless API Docker Image
+ * Step 2: Build the Serverless API Docker Images (Generic and Hardware-Optimized)
  */
-async function buildDockerImage(lang: string): Promise<string> {
-  console.log(`[${lang}] Building rust-serverless Docker image...`);
-  const imageTag = `${DOCKER_IMAGE_PREFIX}-${lang}:latest`;
+async function buildAndPushDockerImages(lang: string) {
+  console.log(`[${lang}] Preparing Docker environment...`);
   
-  // Create a hardlink of the dedicated graph to 'graph.rkyv' in the root folder.
-  // This satisfies the Dockerfile COPY command without sending other languages' massive files 
-  // into the Docker daemon build context, saving tons of time and RAM/Disk space!
+  // Link the giant graph memory so Docker can pick it up
   await $`cd .. && ln -f graphs/${lang}graph.rkyv graph.rkyv`;
 
-  // Assuming the build context needs to be the root to access rust-serverless and graph.rkyv
-  await $`cd .. && docker build -f dockerfile.serverless -t ${imageTag} --build-arg WIKI_LANG=${lang} .`;
+  const genericTag = `${DOCKER_IMAGE_PREFIX}-${lang}:latest`;
+  const localOptimizedTag = `${DOCKER_IMAGE_PREFIX}-${lang}:local-optimized`;
   
-  // Cleanup the hard link so the working directory stays clean
+  // 1. Build & Push Generic Image (No specific CPU constraints)
+  console.log(`[${lang}] Building GENERIC image for Docker Hub...`);
+  await $`cd .. && docker build -f dockerfile.serverless -t ${genericTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS="" .`;
+  console.log(`[${lang}] Pushing GENERIC image to registry...`);
+  await $`docker push ${genericTag}`;
+  console.log(`[${lang}] Removing GENERIC image locally to save disk space...`);
+  await $`docker rmi ${genericTag}`;
+
+  // 2. Build Hardware Optimized Image (Don't push, keep local)
+  console.log(`[${lang}] Building OPTIMIZED image for Hetzner server...`);
+  const optFlags = process.env.OPTIMIZED_RUSTFLAGS || "-C target-cpu=znver2";
+  await $`cd .. && docker build -f dockerfile.serverless -t ${localOptimizedTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS=${optFlags} .`;
+
+  // Cleanup the hard link
   await $`cd .. && rm graph.rkyv`;
-
-  return imageTag;
-}
-
-/**
- * Step 3: Push the Docker image to Docker Hub
- */
-async function pushDockerImage(imageTag: string) {
-  console.log(`[${imageTag}] Pushing image to registry...`);
-  await $`docker push ${imageTag}`;
 }
 
 /**
@@ -79,7 +79,8 @@ async function generateDockerCompose() {
   
   for (const lang of LANGUAGES) {
     const serviceName = `api-${lang}`;
-    const imageTag = `${DOCKER_IMAGE_PREFIX}-${lang}:latest`;
+    // We explicitly instruct Docker Compose to use the optimized local tag
+    const imageTag = `${DOCKER_IMAGE_PREFIX}-${lang}:local-optimized`;
     // Traefik dynamically routes via host: lang.six-degrees.wikiadventu.re
     const traefikRule = `Host(\`${lang}.six-degrees.wikiadventu.re\`)`;
     
@@ -109,9 +110,8 @@ async function generateDockerCompose() {
  */
 async function deployServices(lang: string) {
   const serviceName = `api-${lang}`;
-  console.log(`[Deploy] Pulling latest image and updating container for ${serviceName}...`);
-  // Target only the specific service in docker-compose
-  await $`docker compose pull ${serviceName}`;
+  console.log(`[Deploy] Updating container for ${serviceName} with local optimized image...`);
+  // Note: We deliberately SKIP 'docker compose pull' so it doesn't overwrite our local-optimized image
   await $`docker compose up -d ${serviceName}`;
   
   // Clean up dangling images to save disk space on Hetzner
@@ -145,8 +145,7 @@ async function runPipeline() {
     console.log(`\n--- Processing Language: ${lang.toUpperCase()} ---`);
     try {
       await generateGraph(lang);
-      const imageTag = await buildDockerImage(lang);
-      await pushDockerImage(imageTag);
+      await buildAndPushDockerImages(lang);
       await deployServices(lang);
       console.log(`--- Finished Processing: ${lang.toUpperCase()} ---`);
     } catch (error) {

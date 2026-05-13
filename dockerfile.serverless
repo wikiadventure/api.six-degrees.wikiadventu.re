@@ -4,6 +4,11 @@ WORKDIR /usr/src/app
 COPY rust-serverless ./rust-serverless
 
 WORKDIR /usr/src/app/rust-serverless
+
+# Accept custom hardware optimization flags dynamically
+ARG CUSTOM_RUSTFLAGS=""
+ENV RUSTFLAGS="${CUSTOM_RUSTFLAGS}"
+
 RUN cargo build --release
 
 # Distroless 'cc' image includes glibc and libgcc, required by standard Rust builds
