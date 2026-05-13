@@ -23,7 +23,8 @@ use std::env;
 lazy_static! {
     static ref WIKI_LANG: String =
         env::var("WIKI_LANG").expect("WIKI_LANG environment variable not set");
-    
+    static ref WIKI_DATE: String =
+        env::var("WIKI_DATE").expect("WIKI_DATE environment variable not set");
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, PartialEq)]
@@ -43,7 +44,7 @@ pub struct SqlDumpStream {
 }
 
 async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Box<dyn std::error::Error>> {
-    let path = format!("cache/{}/{}wiki-latest-{}.sql.gz", &*WIKI_LANG, &*WIKI_LANG, file_type);
+    let path = format!("cache/{}/{}/{}wiki-{}-{}.sql.gz", &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     let file_path = std::path::Path::new(&path);
     if file_path.exists() {
         println!("Using cached file: {}", path);
@@ -56,7 +57,7 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
             file_handle_for_progress: progress_handle,
         });
     }
-    let url = format!("https://dumps.wikimedia.org/{}wiki/latest/{}wiki-latest-{}.sql.gz",  &*WIKI_LANG, &*WIKI_LANG, file_type);
+    let url = format!("https://dumps.wikimedia.org/{}wiki/{}/{}wiki-{}-{}.sql.gz",  &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     println!("Downloading {}...", url);
 
     let client = Client::new();
@@ -119,13 +120,13 @@ async fn sql_dump_download_gunzipped(file_type: &str) -> Result<(), Box<dyn std:
     };
     use tokio_util::compat::TokioAsyncWriteCompatExt;
 
-    let path = format!("cache/{}/{}wiki-latest-{}.sql", &*WIKI_LANG, &*WIKI_LANG, file_type);
+    let path = format!("cache/{}/{}/{}wiki-{}-{}.sql", &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     let file_path = std::path::Path::new(&path);
     if file_path.exists() {
         println!("Using cached file: {}", path);
         return Ok(());
     }
-    let url = format!("https://dumps.wikimedia.org/{}wiki/latest/{}wiki-latest-{}.sql.gz",  &*WIKI_LANG, &*WIKI_LANG, file_type);
+    let url = format!("https://dumps.wikimedia.org/{}wiki/{}/{}wiki-{}-{}.sql.gz",  &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     println!("Downloading {}...", url);
 
     let client = Client::new();
@@ -339,7 +340,7 @@ struct MultithreadWriteContext {
 async fn launch_multithread_pagelinks_parser(ctx: Arc<DumpParserContext>) -> (&'static mut u64, &'static mut HashMap<u32, Vec<u32>, FxBuildHasher>) {
     let file_type = "pagelinks";
     sql_dump_download_gunzipped(file_type).await.expect("Failed to download pagelinks dump");
-    let file_path = format!("cache/{}/{}wiki-latest-{}.sql", &*WIKI_LANG, &*WIKI_LANG, file_type);
+    let file_path = format!("cache/{}/{}/{}wiki-{}-{}.sql", &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     let num_threads = num_threads::num_threads().unwrap_or(unsafe { NonZero::new_unchecked(1) }).get(); // Get the number of available threads
 
     let cut_points = find_cut_points(&file_path, num_threads);
@@ -964,7 +965,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create the graphs directory if it doesn't exist
     std::fs::create_dir_all("graphs").unwrap_or_default();
     
-    let path = format!("graphs/{}graph.rkyv", *WIKI_LANG);
+    let path = format!("graphs/{}/{}/graph.rkyv", *WIKI_LANG, *WIKI_DATE);
+    
+    let file_path = std::path::Path::new(&path);
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
     let mut file = File::create(&path)?;
     file.write_all(&bytes).unwrap_or_else(|_| panic!("Failed to write graph to {}", path));
     println!("Graph serialized to {}", path);

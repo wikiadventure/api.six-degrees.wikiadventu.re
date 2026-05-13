@@ -1,5 +1,5 @@
 [Unit]
-Description=Six Degrees of Wikipedia API Monthly Orchestrator Pipeline
+Description=Six Degrees of Wikipedia API Daily Orchestrator Pipeline
 After=network-online.target docker.service
 Requires=docker.service
 

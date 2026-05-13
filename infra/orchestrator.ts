@@ -1,17 +1,100 @@
 import { $ } from "bun";
+import { rm } from "node:fs/promises";
+import type { DumpStatus } from "./types/dumpstatus";
 
-// Configuration
-const LANGUAGES = ["oc", "eo"]; // Add or remove target languages as needed
-const DOCKER_IMAGE_PREFIX = "sacramentix1225/six-degrees-api"; // Replace with your actual Docker Hub namespace
+const LANGUAGES = ["oc", "eo"] as const; 
+type Language = typeof LANGUAGES[number];
 
+if (!process.env.DOCKER_USERNAME) {
+  console.error("FATAL: DOCKER_USERNAME environment variable is required.");
+  process.exit(1);
+}
+const DOCKER_IMAGE_PREFIX = `${process.env.DOCKER_USERNAME}/six-degrees-api`;
+const METADATA_PATH = "../graphs/metadata.json";
+
+type Metadata = Partial<Record<Language, string>>;
+
+async function loadMetadata(): Promise<Metadata> {
+  const file = Bun.file(METADATA_PATH);
+  if (await file.exists()) {
+    try {
+      return await file.json();
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+async function saveMetadata(metadata: Metadata) {
+  // Ensure directory exists
+  await $`mkdir -p ../graphs`;
+  await Bun.write(METADATA_PATH, JSON.stringify(metadata, null, 2));
+}
+
+// region: Verify dump date
 /**
- * Step 0: Build the Data Processor upfront
+ * Step 0.25: Fetch and Verify Dump Dates
+ */
+async function getLatestReadyDumpDate(lang: Language): Promise<string | null> {
+  console.log(`[${lang}] Fetching dump directory listing...`);
+  const indexUrl = `https://dumps.wikimedia.org/${lang}wiki/`;
+  const response = await fetch(indexUrl);
+  if (!response.ok) {
+    console.error(`[${lang}] Failed to fetch directory listing: ${response.statusText}`);
+    return null;
+  }
+  const html = await response.text();
+
+  // Extract dates, filter valid ones, and sort descending (newest first)
+  const dates = Array.from(html.matchAll(/<a href="(\d{8})\/">/g))
+    .map(match => match[1])
+    .filter((date): date is string => date !== undefined)
+    .sort((a, b) => b.localeCompare(a));
+
+  const requiredJobs = ["pagetable", "redirecttable", "linktargettable", "pagelinkstable"];
+
+  for (const date of dates) {
+    console.log(`[${lang}] Checking dump status for date ${date}...`);
+    const statusUrl = `https://dumps.wikimedia.org/${lang}wiki/${date}/dumpstatus.json`;
+    const statusResponse = await fetch(statusUrl);
+    if (!statusResponse.ok) continue;
+
+    try {
+      const statusData = await statusResponse.json() as DumpStatus;
+      const jobs = statusData.jobs;
+      if (!jobs) continue;
+
+      // Verify All Files Ready
+      const allJobsDone = requiredJobs.every(
+        job => jobs[job] && jobs[job].status === "done" && jobs[job].files && Object.keys(jobs[job].files).length > 0
+      );
+
+      if (allJobsDone) {
+        console.log(`[${lang}] Found ready dump: ${date}`);
+        return date;
+      } else {
+        console.log(`[${lang}] Dump ${date} is incomplete. Checking older dates...`);
+      }
+    } catch (e) {
+      console.warn(`[${lang}] Error parsing dumpstatus for ${date}:`, e);
+    }
+  }
+
+  console.log(`[${lang}] No complete dump found.`);
+  return null;
+}
+
+// region: Build graph-builder
+/**
+ * Step 0.5: Build the Data Processor upfront
  */
 async function buildDataProcessor() {
   console.log("Building data processor (rust-graph-builder)...");
   await $`cd .. && cargo build --release --manifest-path=rust-graph-builder/Cargo.toml`;
 }
 
+// region: Login to docker
 /**
  * Step 0.5: Login to Docker Hub
  */
@@ -29,45 +112,53 @@ async function loginToDocker() {
   await $`echo ${pat} | docker login --username ${user} --password-stdin`;
 }
 
+// region: Generate graph
 /**
  * Step 1: Run the Data Processor to generate graph.rkyv for a given language
  */
-async function generateGraph(lang: string) {
+async function generateGraph(lang: Language, date: string) {
   console.log(`[${lang}] Running data processor (rust-graph-builder)...`);
   // Using WIKI_LANG or CLI args depending on your rust implementation.
   // We navigate to the parent repository root to execute the compiled binary.
-  await $`cd .. && WIKI_LANG=${lang} ./rust-graph-builder/target/release/rust-graph-builder`;
+  await $`cd .. && WIKI_LANG=${lang} WIKI_DATE=${date} ./rust-graph-builder/target/release/rust-graph-builder`;
 }
 
+// region: Docker build & push
 /**
  * Step 2: Build the Serverless API Docker Images (Generic and Hardware-Optimized)
  */
-async function buildAndPushDockerImages(lang: string) {
+async function buildAndPushDockerImages(lang: Language, date: string) {
   console.log(`[${lang}] Preparing Docker environment...`);
   
   // Link the giant graph memory so Docker can pick it up
-  await $`cd .. && ln -f graphs/${lang}graph.rkyv graph.rkyv`;
+  await $`cd .. && ln -f graphs/${lang}/${date}/graph.rkyv graph.rkyv`;
 
-  const genericTag = `${DOCKER_IMAGE_PREFIX}-${lang}:latest`;
-  const localOptimizedTag = `${DOCKER_IMAGE_PREFIX}-${lang}:local-optimized`;
-  
-  // 1. Build & Push Generic Image (No specific CPU constraints)
-  console.log(`[${lang}] Building GENERIC image for Docker Hub...`);
-  await $`cd .. && docker build -f dockerfile.graph-api -t ${genericTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS="" .`;
-  console.log(`[${lang}] Pushing GENERIC image to registry...`);
-  await $`docker push ${genericTag}`;
-  console.log(`[${lang}] Removing GENERIC image locally to save disk space...`);
-  await $`docker rmi ${genericTag}`;
+  try {
+    const genericTag = `${DOCKER_IMAGE_PREFIX}-${lang}:${date}`;
+    const latestTag = `${DOCKER_IMAGE_PREFIX}-${lang}:latest`;
+    const localOptimizedTag = `${DOCKER_IMAGE_PREFIX}-${lang}:local-optimized`;
+    
+    // 1. Build & Push Generic Image (No specific CPU constraints)
+    console.log(`[${lang}] Building GENERIC image for Docker Hub...`);
+    await $`cd .. && docker build -f dockerfile.graph-api -t ${genericTag} -t ${latestTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS="" .`;
+    console.log(`[${lang}] Pushing GENERIC image to registry...`);
+    await $`docker push ${genericTag}`;
+    await $`docker push ${latestTag}`;
+    console.log(`[${lang}] Removing GENERIC image locally to save disk space...`);
+    await $`docker rmi ${genericTag} ${latestTag}`;
 
-  // 2. Build Hardware Optimized Image (Don't push, keep local)
-  console.log(`[${lang}] Building OPTIMIZED image for Hetzner server...`);
-  const optFlags = process.env.OPTIMIZED_RUSTFLAGS || "-C target-cpu=znver2";
-  await $`cd .. && docker build -f dockerfile.graph-api -t ${localOptimizedTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS=${optFlags} .`;
-
-  // Cleanup the hard link
-  await $`cd .. && rm graph.rkyv`;
+    // 2. Build Hardware Optimized Image (Don't push, keep local)
+    console.log(`[${lang}] Building OPTIMIZED image for Hetzner server...`);
+    const optFlags = process.env.OPTIMIZED_RUSTFLAGS || "-C target-cpu=znver2";
+    await $`cd .. && docker build -f dockerfile.graph-api -t ${localOptimizedTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS=${optFlags} .`;
+  } finally {
+    // Cleanup the hard link regardless of build success
+    await $`cd .. && rm -f graph.rkyv`;
+  }
 }
 
+
+// region: Docker build & push
 /**
  * Generate a complete docker-compose.yml from the base and the target languages
  */
@@ -105,10 +196,11 @@ async function generateDockerCompose() {
   console.log("docker-compose.yml generated successfully.");
 }
 
+// region: Deploy Traefik
 /**
  * Step 4: Deploy and perform zero-downtime swap using Traefik & Docker Compose
  */
-async function deployServices(lang: string) {
+async function deployServices(lang: Language) {
   const serviceName = `api-${lang}`;
   console.log(`[Deploy] Updating container for ${serviceName} with local optimized image...`);
   // Note: We deliberately SKIP 'docker compose pull' so it doesn't overwrite our local-optimized image
@@ -118,6 +210,28 @@ async function deployServices(lang: string) {
   await $`docker image prune -f`;
 }
 
+// region: Cleanup
+/**
+ * Step 5: Cleanup old cache and graphs files
+ */
+async function cleanupOldFiles(lang: Language, newDate: string, oldDate?: string) {
+  if (!oldDate || oldDate === newDate) return;
+  console.log(`[${lang}] Cleaning up old files for date: ${oldDate}`);
+  try {
+    await rm(`../cache/${lang}/${oldDate}`, { recursive: true, force: true });
+    console.log(`[${lang}] Removed old cache directory: cache/${lang}/${oldDate}`);
+  } catch (e) {
+    console.warn(`[${lang}] Failed to remove old cache directory:`, e);
+  }
+  try {
+    await rm(`../graphs/${lang}/${oldDate}`, { recursive: true, force: true });
+    console.log(`[${lang}] Removed old graphs directory: graphs/${lang}/${oldDate}`);
+  } catch (e) {
+    console.warn(`[${lang}] Failed to remove old graphs directory:`, e);
+  }
+}
+
+// region: Main
 /**
  * Main Orchestrator Pipeline
  * Runs sequentially to avoid CPU/RAM bottlenecking on the host machine.
@@ -141,12 +255,34 @@ async function runPipeline() {
     process.exit(1);
   }
 
+  const metadata = await loadMetadata();
+
   for (const lang of LANGUAGES) {
     console.log(`\n--- Processing Language: ${lang.toUpperCase()} ---`);
     try {
-      await generateGraph(lang);
-      await buildAndPushDockerImages(lang);
+      const latestDate = await getLatestReadyDumpDate(lang);
+      if (!latestDate) {
+        console.log(`[${lang}] No ready dump found. Skipping.`);
+        continue;
+      }
+
+      const lastProcessed = metadata[lang];
+      if (lastProcessed && latestDate <= lastProcessed) {
+        console.log(`[${lang}] Dump date ${latestDate} is not newer than last processed (${lastProcessed}). Skipping.`);
+        continue;
+      }
+
+      console.log(`[${lang}] New dump date found: ${latestDate}. Proceeding with build.`);
+
+      await generateGraph(lang, latestDate);
+      await buildAndPushDockerImages(lang, latestDate);
       await deployServices(lang);
+      await cleanupOldFiles(lang, latestDate, lastProcessed);
+
+      // Save the successful run date
+      metadata[lang] = latestDate;
+      await saveMetadata(metadata);
+
       console.log(`--- Finished Processing: ${lang.toUpperCase()} ---`);
     } catch (error) {
       console.error(`[ERROR] Pipeline failed for language ${lang}:`, error);
