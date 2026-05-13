@@ -15,10 +15,11 @@ use tokio::{sync::Mutex, task};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use crate::dump_logger::DumpProgressLogger;
 #[path = "logger/dump_logger.rs"] mod dump_logger;
+#[path = "metrics/dump_metrics.rs"] mod dump_metrics;
+use crate::dump_metrics::{DumpMetrics, BuildMetrics};
 
 use dotenv::dotenv;
 use std::env;
-
 
 lazy_static! {
     static ref WIKI_LANG: String =
@@ -846,6 +847,9 @@ fn resolve_redirect(page_title_option:Option<&String>, pages_map: &FxHashMap<Str
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
+    
+    let total_start_time = Instant::now();
+
     let mut ctx = DumpParserContext {
         pages_map: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
         redirects_map: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
@@ -853,20 +857,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pages_links: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
         links_count: Box::leak(Box::new(0))
     };
+    
     println!("\nStart parsing pages dump...");
+    let start_pages = Instant::now();
     parse_and_load_page(&mut ctx).await;
+    let time_pages = start_pages.elapsed().as_secs_f64();
+    let count_pages = ctx.pages_map.len();
     println!("\nPages dump parsing complete!");
+    
     println!("\nStart parsing redirect dump...");
+    let start_redirects = Instant::now();
     parse_and_load_redirect(&mut ctx).await;
+    let time_redirects = start_redirects.elapsed().as_secs_f64();
+    let count_redirects = ctx.redirects_map.len();
     println!("\nRedirect dump parsing complete!");
+    
     println!("\nStart parsing linktarget dump...");
+    let start_linktargets = Instant::now();
     parse_and_load_link_target(&mut ctx).await;
+    let time_linktargets = start_linktargets.elapsed().as_secs_f64();
+    let count_linktargets = ctx.linktarget_map.len();
     println!("\nLinktarget dump parsing complete!");
+    
     println!("\nStart parsing page links dump...");
-
     let use_multithread = std::env::var("USE_MULTITHREAD").unwrap_or("0".to_string());
     let actx = Arc::new(ctx);
     let cctx = Arc::clone(&actx);
+    
+    let start_pagelinks = Instant::now();
     let (links_count, pages_links) = if use_multithread == "true" || use_multithread == "1" {
         let (links_count, pages_links) = launch_multithread_pagelinks_parser(actx).await;
         (links_count, pages_links)
@@ -874,8 +892,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (links_count, pages_links) = parse_and_load_page_links(actx).await;
         (links_count, pages_links)
     };
-    
+    let time_pagelinks = start_pagelinks.elapsed().as_secs_f64();
+    let count_pagelinks = *links_count as usize;
     println!("\nPage links dump parsing complete!");
+
+    let start_csr = Instant::now();
 
     println!("\nAdding page with no links");
     for (_page_title, wiki_page_id) in cctx.pages_map.iter() {
@@ -993,6 +1014,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut file = File::create(&path)?;
     file.write_all(&bytes).unwrap_or_else(|_| panic!("Failed to write graph to {}", path));
     println!("Graph serialized to {}", path);
+
+    let time_csr = start_csr.elapsed().as_secs_f64();
+    let total_time_sec = total_start_time.elapsed().as_secs_f64();
+
+    let metrics = BuildMetrics {
+        language: WIKI_LANG.to_string(),
+        total_time_sec,
+        total_time_human: crate::dump_metrics::format_duration(total_time_sec),
+        pages: DumpMetrics::new(time_pages, count_pages),
+        redirects: DumpMetrics::new(time_redirects, count_redirects),
+        linktargets: DumpMetrics::new(time_linktargets, count_linktargets),
+        pagelinks: DumpMetrics::new(time_pagelinks, count_pagelinks),
+        csr_build_time_sec: time_csr,
+        csr_build_time_human: crate::dump_metrics::format_duration(time_csr),
+    };
+
+    metrics.save(&*WIKI_LANG, &*WIKI_DATE).unwrap_or_else(|_| panic!("Failed to write metrics"));
 
     Ok(())
 }
