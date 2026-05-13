@@ -2,25 +2,6 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"type": "docker-run",
-			"label": "docker-run: debug",
-			"dependsOn": ["docker-build"],
-			"dockerRun": {
-				"env": {
-					"USE_CACHE": "0",
-					"WIKI_LANG": "fr"
-				},
-				"command": "cd /project/sql-dump-to-arango && npm start"
-			},
-			"options": {
-			
-			},
-			"node": {
-				
-			  	"enableDebugging": true
-			}
-		},
-		{
 			"label": "build-rust-graph-api",
 			"type": "shell",
 			"command": "mise exec -- cargo build --package=rust-graph-api",
