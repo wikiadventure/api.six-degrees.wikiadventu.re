@@ -142,18 +142,21 @@ async function buildAndPushDockerImages(lang: Language, date: string) {
   await link(targetPath, linkPath);
 
   try {
-    const genericTag = `${DOCKER_IMAGE_PREFIX}-${lang}:${date}`;
+    const commitHash = (await $`git rev-parse --short HEAD`.text()).trim();
+    const genericTag = `${DOCKER_IMAGE_PREFIX}-${lang}:${date}-${commitHash}`;
+    const dateTag = `${DOCKER_IMAGE_PREFIX}-${lang}:${date}`;
     const latestTag = `${DOCKER_IMAGE_PREFIX}-${lang}:latest`;
     const localOptimizedTag = `${DOCKER_IMAGE_PREFIX}-${lang}:local-optimized`;
     
     // 1. Build & Push Generic Image (No specific CPU constraints)
     console.log(`[${lang}] Building GENERIC image for Docker Hub...`);
-    await $`cd .. && docker build -f dockerfile.graph-api -t ${genericTag} -t ${latestTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS="" .`;
+    await $`cd .. && docker build -f dockerfile.graph-api -t ${genericTag} -t ${dateTag} -t ${latestTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS="" .`;
     console.log(`[${lang}] Pushing GENERIC image to registry...`);
     await $`docker push ${genericTag}`;
+    await $`docker push ${dateTag}`;
     await $`docker push ${latestTag}`;
     console.log(`[${lang}] Removing GENERIC image locally to save disk space...`);
-    await $`docker rmi ${genericTag} ${latestTag}`;
+    await $`docker rmi ${genericTag} ${dateTag} ${latestTag}`;
 
     // 2. Build Hardware Optimized Image (Don't push, keep local)
     console.log(`[${lang}] Building OPTIMIZED image for Hetzner server...`);
