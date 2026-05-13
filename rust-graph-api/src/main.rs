@@ -10,6 +10,12 @@ use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use std::collections::HashMap;
 use std::fs::File;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PageId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NodeIdx(pub u32);
+
 #[derive(Archive, Serialize, Deserialize, Debug, PartialEq)]
 struct CsrGraph {
     offsets: Vec<u32>,
@@ -26,15 +32,47 @@ static GRAPH: Lazy<&'static ArchivedCsrGraph> = Lazy::new(|| {
     log::info!("Lazily loading graph data for static access...");
 
     let file = File::open("graph.rkyv").expect("Failed to open graph.rkyv");
-    // SAFETY: The file is trusted and not modified elsewhere.
+    // SAFETY: The file is structurally guaranteed to be valid by our graph builder,
+    // and since it is deployed statically via Docker, it will not be mutated concurrently.
     let mmap = unsafe { Mmap::map(&file).expect("Failed to memory-map the file.") };
 
     // Leak the mmap to get a 'static lifetime.
     let mmap_static: &'static [u8] = Box::leak(Box::new(mmap));
 
-    // Use `access` for validation. Panics on failure, which is common for lazy_static.
-    // For production, you might want more graceful error handling.
-    access::<ArchivedCsrGraph, rancor::Error>(mmap_static).expect("Failed to validate archived graph.")
+    #[cfg(target_os = "linux")]
+    {
+        log::info!("Warming up page cache in the background using madvise...");
+        // SAFETY: We pass a valid mapped address to libc::madvise, ensuring length is correct.
+        // It's a non-destructive kernel hint and strictly read-only mapping.
+        unsafe {
+            let addr = mmap_static.as_ptr() as *mut libc::c_void;
+            let len = mmap_static.len();
+            if libc::madvise(addr, len, libc::MADV_WILLNEED) != 0 {
+                log::warn!("madvise(MADV_WILLNEED) failed");
+            } else {
+                log::info!("madvise successfully hinted the kernel to preload the graph.");
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Fallback for non-Linux: Spawn a background thread to sequentially warm up the page cache
+        std::thread::spawn(move || {
+            log::info!("Warming up page cache in the background (fallback)...");
+            let mut _sink = 0;
+            // Read 1 byte every 4KB (standard OS page size) to force a page fault
+            for i in (0..mmap_static.len()).step_by(4096) {
+                _sink ^= unsafe { std::ptr::read_volatile(&mmap_static[i]) };
+            }
+            log::info!("Page cache warm-up complete! Warmed {} MB.", mmap_static.len() / 1024 / 1024);
+        });
+    }
+
+    // SAFETY: We trust the `graph.rkyv` blob aligns correctly to ArchievedCsrGraph.
+    // The builder script directly serializes to this exact memory layout, 
+    // ensuring we don't encounter uninitialized/padding bytes that cause UB.
+    unsafe { rkyv::access_unchecked::<ArchivedCsrGraph>(mmap_static) }
 });
 
 
@@ -43,10 +81,10 @@ struct AppState {
 }
 
 fn reconstruct_paths(
-    node: u32,
-    start_node: u32,
-    parents: &FxHashMap<u32, Vec<u32>>,
-) -> Vec<Vec<u32>> {
+    node: NodeIdx,
+    start_node: NodeIdx,
+    parents: &FxHashMap<NodeIdx, Vec<NodeIdx>>,
+) -> Vec<Vec<NodeIdx>> {
     if node == start_node {
         return vec![vec![start_node]];
     }
@@ -69,12 +107,15 @@ fn find_all_shortest_path(
     start_page_id: u32,
     end_page_id: u32,
 ) -> Vec<Vec<u32>> {
-    let start_node = match graph.page_id_to_index.get(&u32_le::from_native(start_page_id)) {
-        Some(id) => id.to_native(),
+    let start_page = PageId(start_page_id);
+    let end_page = PageId(end_page_id);
+
+    let start_node = match graph.page_id_to_index.get(&u32_le::from_native(start_page.0)) {
+        Some(id) => NodeIdx(id.to_native()),
         None => return vec![],
     };
-    let end_node = match graph.page_id_to_index.get(&u32_le::from_native(end_page_id)) {
-        Some(id) => id.to_native(),
+    let end_node = match graph.page_id_to_index.get(&u32_le::from_native(end_page.0)) {
+        Some(id) => NodeIdx(id.to_native()),
         None => return vec![],
     };
 
@@ -89,18 +130,20 @@ fn find_all_shortest_path(
     backward_frontier.insert(end_node);
 
     // Visited maps store distances and parents.
-    let mut forward_dist: FxHashMap<u32, u32> = FxHashMap::with_hasher(FxBuildHasher::default());
+    let mut forward_dist: FxHashMap<NodeIdx, u32> = FxHashMap::with_hasher(FxBuildHasher::default());
     forward_dist.insert(start_node, 0);
-    let mut backward_dist: FxHashMap<u32, u32> = FxHashMap::with_hasher(FxBuildHasher::default());
+    let mut backward_dist: FxHashMap<NodeIdx, u32> = FxHashMap::with_hasher(FxBuildHasher::default());
     backward_dist.insert(end_node, 0);
 
-    let mut forward_parents: FxHashMap<u32, Vec<u32>> = FxHashMap::with_hasher(FxBuildHasher::default());
-    let mut backward_parents: FxHashMap<u32, Vec<u32>> = FxHashMap::with_hasher(FxBuildHasher::default());
+    let mut forward_parents: FxHashMap<NodeIdx, Vec<NodeIdx>> = FxHashMap::with_hasher(FxBuildHasher::default());
+    let mut backward_parents: FxHashMap<NodeIdx, Vec<NodeIdx>> = FxHashMap::with_hasher(FxBuildHasher::default());
 
     let mut meeting_nodes = FxHashSet::with_hasher(FxBuildHasher::default());
     let mut shortest_path_len = u32::MAX;
     let mut forward_depth = 0;
     let mut backward_depth = 0;
+
+    let parallel_threshold = /* 1000 items */ 1000;
 
     while !forward_frontier.is_empty() && !backward_frontier.is_empty() {
         // Stop if we can't find a shorter path than we've already found.
@@ -109,16 +152,34 @@ fn find_all_shortest_path(
         }
 
         // Python script trick: expand the frontier with fewer outgoing links.
-        let forward_link_count: usize = forward_frontier.par_iter().map(|&u| {
-            let start = graph.offsets[u as usize].to_native() as usize;
-            let end = graph.offsets[(u + 1) as usize].to_native() as usize;
-            end - start
-        }).sum();
-        let backward_link_count: usize = backward_frontier.par_iter().map(|&u| {
-            let start = graph.reverse_offsets[u as usize].to_native() as usize;
-            let end = graph.reverse_offsets[(u + 1) as usize].to_native() as usize;
-            end - start
-        }).sum();
+        // Fallback to sequential iteration for small frontiers to avoid Thread Pool overhead
+        let forward_link_count: usize = if forward_frontier.len() < parallel_threshold {
+            forward_frontier.iter().map(|&u| {
+                let start = graph.offsets[u.0 as usize].to_native() as usize;
+                let end = graph.offsets[(u.0 + 1) as usize].to_native() as usize;
+                end - start
+            }).sum()
+        } else {
+            forward_frontier.par_iter().map(|&u| {
+                let start = graph.offsets[u.0 as usize].to_native() as usize;
+                let end = graph.offsets[(u.0 + 1) as usize].to_native() as usize;
+                end - start
+            }).sum()
+        };
+
+        let backward_link_count: usize = if backward_frontier.len() < parallel_threshold {
+            backward_frontier.iter().map(|&u| {
+                let start = graph.reverse_offsets[u.0 as usize].to_native() as usize;
+                let end = graph.reverse_offsets[(u.0 + 1) as usize].to_native() as usize;
+                end - start
+            }).sum()
+        } else {
+            backward_frontier.par_iter().map(|&u| {
+                let start = graph.reverse_offsets[u.0 as usize].to_native() as usize;
+                let end = graph.reverse_offsets[(u.0 + 1) as usize].to_native() as usize;
+                end - start
+            }).sum()
+        };
 
         let expand_forward = forward_link_count <= backward_link_count;
 
@@ -126,10 +187,10 @@ fn find_all_shortest_path(
             forward_depth += 1;
             let mut next_frontier = FxHashSet::with_capacity_and_hasher(forward_frontier.len() * 5, FxBuildHasher::default());
             for &u in &forward_frontier {
-                let start_offset = graph.offsets[u as usize].to_native() as usize;
-                let end_offset = graph.offsets[(u + 1) as usize].to_native() as usize;
+                let start_offset = graph.offsets[u.0 as usize].to_native() as usize;
+                let end_offset = graph.offsets[(u.0 + 1) as usize].to_native() as usize;
                 for v_le in &graph.edges[start_offset..end_offset] {
-                    let v = v_le.to_native();
+                    let v = NodeIdx(v_le.to_native());
 
                     if !forward_dist.contains_key(&v) {
                         forward_dist.insert(v, forward_depth);
@@ -159,10 +220,10 @@ fn find_all_shortest_path(
             backward_depth += 1;
             let mut next_frontier = FxHashSet::with_capacity_and_hasher(backward_frontier.len() * 5, FxBuildHasher::default());
             for &u in &backward_frontier {
-                let start_offset = graph.reverse_offsets[u as usize].to_native() as usize;
-                let end_offset = graph.reverse_offsets[(u + 1) as usize].to_native() as usize;
+                let start_offset = graph.reverse_offsets[u.0 as usize].to_native() as usize;
+                let end_offset = graph.reverse_offsets[(u.0 + 1) as usize].to_native() as usize;
                 for v_le in &graph.reverse_edges[start_offset..end_offset] {
-                    let v = v_le.to_native();
+                    let v = NodeIdx(v_le.to_native());
 
                     if !backward_dist.contains_key(&v) {
                         backward_dist.insert(v, backward_depth);
@@ -195,7 +256,7 @@ fn find_all_shortest_path(
         return vec![];
     }
 
-    let all_paths: FxHashSet<Vec<u32>> = meeting_nodes
+    let all_paths: FxHashSet<Vec<NodeIdx>> = meeting_nodes
         .par_iter()
         .flat_map(|&meet_node| {
             let forward_paths = reconstruct_paths(meet_node, start_node, &forward_parents);
@@ -205,10 +266,11 @@ fn find_all_shortest_path(
 
             for f_path in &forward_paths {
                 for b_path in &backward_paths {
-                    let mut path = f_path.clone();
-                    let mut reversed_b_path = b_path.clone();
-                    reversed_b_path.reverse();
-                    path.extend_from_slice(&reversed_b_path[1..]);
+                    // Pre-allocate exact size to avoid repeated allocations
+                    let mut path = Vec::with_capacity(f_path.len() + b_path.len() - 1);
+                    path.extend_from_slice(f_path);
+                    // Append reversed backward path skipping the overlap meeting node
+                    path.extend(b_path.iter().rev().skip(1));
                     combined_paths.push(path);
                 }
             }
@@ -217,7 +279,7 @@ fn find_all_shortest_path(
         .collect();
 
     all_paths.into_par_iter().map(|path| {
-        path.into_iter().map(|idx| graph.index_to_page_id.get(&u32_le::from_native(idx)).unwrap().to_native()).collect()
+        path.into_iter().map(|idx| graph.index_to_page_id.get(&u32_le::from_native(idx.0)).unwrap().to_native()).collect()
     }).collect()
 }
 

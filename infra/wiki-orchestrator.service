@@ -1,0 +1,27 @@
+[Unit]
+Description=Six Degrees of Wikipedia API Daily Orchestrator Pipeline
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=wiki-builder
+Group=wiki-builder
+# Assuming the repo is pulled somewhere like /opt/six-degrees-api
+WorkingDirectory=/opt/wikiadventu.re/api.six-degrees.wikiadventu.re/infra
+
+# When using mise, systemd doesn't load your .bashrc, so it won't know where bun or cargo are.
+# You must explicitly add the mise shims to the PATH environment variable here.
+Environment="PATH=/home/wiki-builder/.local/share/mise/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# ExecStart needs the absolute path to the bun shim managed by mise
+EnvironmentFile=/opt/wikiadventu.re/api.six-degrees.wikiadventu.re/infra/.env.secrets
+ExecStart=/home/wiki-builder/.local/share/mise/shims/bun run orchestrator.ts
+
+# To ensure the process has permissions and doesn't get OOM-killed aggressively
+OOMScoreAdjust=-500
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

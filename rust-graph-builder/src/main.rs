@@ -15,15 +15,19 @@ use tokio::{sync::Mutex, task};
 use rustc_hash::{FxBuildHasher, FxHashMap};
 use crate::dump_logger::DumpProgressLogger;
 #[path = "logger/dump_logger.rs"] mod dump_logger;
+#[path = "metrics/dump_metrics.rs"] mod dump_metrics;
+use crate::dump_metrics::{DumpMetrics, BuildMetrics};
 
 use dotenv::dotenv;
 use std::env;
 
-
 lazy_static! {
     static ref WIKI_LANG: String =
         env::var("WIKI_LANG").expect("WIKI_LANG environment variable not set");
-    
+    static ref WIKI_DATE: String =
+        env::var("WIKI_DATE").expect("WIKI_DATE environment variable not set");
+    static ref WIKI_DUMP_MIRROR: String =
+        env::var("WIKI_DUMP_MIRROR").unwrap_or_else(|_| "https://dumps.wikimedia.org/".to_string());
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, PartialEq)]
@@ -43,7 +47,7 @@ pub struct SqlDumpStream {
 }
 
 async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Box<dyn std::error::Error>> {
-    let path = format!("cache/{}/{}wiki-latest-{}.sql.gz", &*WIKI_LANG, &*WIKI_LANG, file_type);
+    let path = format!("cache/{}/{}/{}wiki-{}-{}.sql.gz", &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     let file_path = std::path::Path::new(&path);
     if file_path.exists() {
         println!("Using cached file: {}", path);
@@ -56,7 +60,9 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
             file_handle_for_progress: progress_handle,
         });
     }
-    let url = format!("https://dumps.wikimedia.org/{}wiki/latest/{}wiki-latest-{}.sql.gz",  &*WIKI_LANG, &*WIKI_LANG, file_type);
+    
+    let base_url = WIKI_DUMP_MIRROR.trim_end_matches('/');
+    let url = format!("{}/{}wiki/{}/{}wiki-{}-{}.sql.gz", base_url, &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     println!("Downloading {}...", url);
 
     let client = Client::new();
@@ -68,22 +74,25 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
         .unwrap()
         .progress_chars("#>-"));
     let file_path = std::path::Path::new(&path);
+    let part_path = format!("{}.part", path);
+    let part_file_path = std::path::Path::new(&part_path);
 
     // Create parent directory if it doesn't exist
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut file = std::fs::File::create(file_path)?;
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(part_file_path).await?;
     
     let mut downloaded: u64 = 0;
     let mut last_log_time = Instant::now();
-    let log_interval = Duration::from_secs(10);
+    let log_interval = Duration::from_secs(15);
 
     // Note: `res` must be mutable to be read from.
     while let Some(chunk) = res.chunk().await? {
         let chunk_len = chunk.len() as u64;
-        file.write_all(&chunk)?;
+        file.write_all(&chunk).await?; // Non-blocking write
         pb.inc(chunk_len);
         downloaded += chunk_len;
 
@@ -98,6 +107,10 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
             last_log_time = Instant::now();
         }
     }
+    file.flush().await?;
+    drop(file); // Ensure file is closed before renaming
+    tokio::fs::rename(part_file_path, file_path).await?;
+
     pb.finish_with_message("Downloaded");
     // Open the newly downloaded file
     let saved_file = std::fs::File::open(file_path)?;
@@ -119,13 +132,15 @@ async fn sql_dump_download_gunzipped(file_type: &str) -> Result<(), Box<dyn std:
     };
     use tokio_util::compat::TokioAsyncWriteCompatExt;
 
-    let path = format!("cache/{}/{}wiki-latest-{}.sql", &*WIKI_LANG, &*WIKI_LANG, file_type);
+    let path = format!("cache/{}/{}/{}wiki-{}-{}.sql", &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     let file_path = std::path::Path::new(&path);
     if file_path.exists() {
         println!("Using cached file: {}", path);
         return Ok(());
     }
-    let url = format!("https://dumps.wikimedia.org/{}wiki/latest/{}wiki-latest-{}.sql.gz",  &*WIKI_LANG, &*WIKI_LANG, file_type);
+    
+    let base_url = WIKI_DUMP_MIRROR.trim_end_matches('/');
+    let url = format!("{}/{}wiki/{}/{}wiki-{}-{}.sql.gz", base_url, &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     println!("Downloading {}...", url);
 
     let client = Client::new();
@@ -136,19 +151,21 @@ async fn sql_dump_download_gunzipped(file_type: &str) -> Result<(), Box<dyn std:
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
         .unwrap()
         .progress_chars("#>-"));
-    let file_path = std::path::Path::new(&path);
+    
+    let part_path = format!("{}.part", path);
+    let part_file_path = std::path::Path::new(&part_path);
 
     // Create parent directory if it doesn't exist
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let file = tokio::fs::File::create(file_path).await?;
+    let file = tokio::fs::File::create(part_file_path).await?;
     let mut compat_file = file.compat_write();
 
     let mut downloaded_size: u64 = 0;
     let mut last_log_time = Instant::now();
-    let log_interval = Duration::from_secs(10);
+    let log_interval = Duration::from_secs(15);
     let url_clone = url.clone();
     let pb_clone = Arc::clone(&pb);
 
@@ -180,6 +197,10 @@ async fn sql_dump_download_gunzipped(file_type: &str) -> Result<(), Box<dyn std:
     let mut decoder = GzipDecoder::new(BufReader::new(reader));
 
     futures::io::copy(&mut decoder, &mut compat_file).await?;
+    
+    // Close the file compatibility layer to ensure writes are flushed
+    compat_file.close().await?;
+    tokio::fs::rename(part_file_path, file_path).await?;
 
     pb.finish_with_message("Downloaded");
     Ok(())
@@ -325,21 +346,16 @@ async fn multithreaded_pagelink_dump_parser(file:File, start_offset:u64, end_off
     }
 }}
 
-struct MultithreadSharedReadContext {
-    pub pages_map: &'static HashMap<String, WikiPageId, FxBuildHasher>,
-    pub redirects_map: &'static HashMap<u32, String, FxBuildHasher>,
-    pub linktarget_map: &'static HashMap<u32, String, FxBuildHasher>,
-}
 
 struct MultithreadWriteContext {
-    pub pages_links: HashMap<u32, Vec<u32>, FxBuildHasher>,
+    pub pages_links: Vec<(u32, u32)>,
     pub links_count: u64,
 }
 
-async fn launch_multithread_pagelinks_parser(ctx: Arc<DumpParserContext>) -> (&'static mut u64, &'static mut HashMap<u32, Vec<u32>, FxBuildHasher>) {
+async fn launch_multithread_pagelinks_parser(ctx: Arc<DumpParserContext>) -> (&'static mut u64, &'static mut Vec<(u32, u32)>) {
     let file_type = "pagelinks";
     sql_dump_download_gunzipped(file_type).await.expect("Failed to download pagelinks dump");
-    let file_path = format!("cache/{}/{}wiki-latest-{}.sql", &*WIKI_LANG, &*WIKI_LANG, file_type);
+    let file_path = format!("cache/{}/{}/{}wiki-{}-{}.sql", &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     let num_threads = num_threads::num_threads().unwrap_or(unsafe { NonZero::new_unchecked(1) }).get(); // Get the number of available threads
 
     let cut_points = find_cut_points(&file_path, num_threads);
@@ -357,7 +373,7 @@ async fn launch_multithread_pagelinks_parser(ctx: Arc<DumpParserContext>) -> (&'
         .map(|(i,(start_offset, end_offset))| {
             let read_ctx = Arc::clone(&ctx);
             let write_ctx = Arc::new(Mutex::new(MultithreadWriteContext {
-                pages_links: FxHashMap::with_hasher(FxBuildHasher::default()),
+                pages_links: Vec::new(),
                 links_count: 0,
             }));
             let file_path_clone = file_path.clone();
@@ -372,17 +388,14 @@ async fn launch_multithread_pagelinks_parser(ctx: Arc<DumpParserContext>) -> (&'
         })
         .collect();
 
-    let mut all_pages_links: &'static mut FxHashMap<u32, Vec<u32>> = Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default())));
+    let mut all_pages_links: &'static mut Vec<(u32, u32)> = Box::leak(Box::new(Vec::new()));
     let mut all_links_count: u64 = 0;
     
     for (write_ctx, handle) in write_context_with_handles {
         handle.await.expect("Thread panicked");
         let mut write = write_ctx.try_lock().expect("Write context is locked");
         all_links_count += write.links_count;
-        for (key, value) in write.pages_links.drain() {
-            all_pages_links.entry(key).or_insert_with(Vec::new).extend(value);
-        }
-
+        all_pages_links.extend(write.pages_links.drain(..));
     }
     let all_links_count_static: &'static mut u64 = Box::leak(Box::new(all_links_count));
 
@@ -428,22 +441,14 @@ async fn multithread_parse_and_load_page_links(read_ctx:&Arc<DumpParserContext>,
             let _to_resolved_option = resolve_redirect(redirects_map.get(&_to), pages_map, redirects_map);
             if _to_resolved_option.is_none() {continue;}
             let _to_resolved =_to_resolved_option.unwrap();
-            if !write.pages_links.contains_key(&_from) {
-                write.pages_links.insert(_from, vec![_to_resolved]);
-            } else {
-                write.pages_links.entry(_from).or_default().push(_to_resolved); 
-            }
+            write.pages_links.push((_from, _to_resolved));
             // nextBatch.push({_from, _to: _to_resolved});
             // The link resolve to a valid page
         } else {
-            if !write.pages_links.contains_key(&_from) {
-                write.pages_links.insert(_from, vec![_to]);
-            } else {
-                write.pages_links.entry(_from).or_default().push(_to); 
-            }
+            write.pages_links.push((_from, _to));
         }
         count+=1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0) - start_offset;
             logger.log(bytes_read_amount, count);
         }
@@ -571,7 +576,7 @@ pub struct DumpParserContext {
     pub pages_map: &'static mut FxHashMap<String, WikiPageId>,
     pub redirects_map: &'static mut FxHashMap<u32, String>,
     pub linktarget_map: &'static mut FxHashMap<u32, String>,
-    pub pages_links: &'static mut FxHashMap<u32, Vec<u32>>,
+    pub pages_links: &'static mut Vec<(u32, u32)>,
     pub links_count: &'static mut u64,
 }
 
@@ -607,7 +612,7 @@ async fn parse_and_load_page(ctx: &mut DumpParserContext) {
         };
         pages_map.insert(page_title, wiki_page_id);
         count += 1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
             logger.log(bytes_read_amount, count);
         }
@@ -659,7 +664,7 @@ async fn parse_and_load_redirect(ctx: &mut DumpParserContext) {
         let _to = _to_is_redirect.id;
         let is_redirect = _to_is_redirect.is_redirect;
         count += 1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
             logger.log(bytes_read_amount, count);
         }
@@ -686,7 +691,7 @@ async fn parse_and_load_redirect(ctx: &mut DumpParserContext) {
     //     // nextBatch.push({_from, _to});
             
     //     count += 1;
-    //     if (count % 65_536) == 0 {
+    //     if (count % 262_144) == 0 {
     //         let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
     //         logger.log(bytes_read_amount, count);
     //     }
@@ -719,7 +724,7 @@ async fn parse_and_load_link_target(ctx: &mut DumpParserContext) {
         let lt_id = raw_lt_id.parse().expect("lt_id is not a valid u32");
         linktarget_map.insert(lt_id,lt_title);
         count+=1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
             logger.log(bytes_read_amount, count);
         }
@@ -732,14 +737,14 @@ async fn parse_and_load_link_target(ctx: &mut DumpParserContext) {
 
 }
 
-async fn parse_and_load_page_links(ctx:Arc<DumpParserContext>) -> (&'static mut u64, &'static mut HashMap<u32, Vec<u32>, FxBuildHasher>) {
+async fn parse_and_load_page_links(ctx:Arc<DumpParserContext>) -> (&'static mut u64, &'static mut Vec<(u32, u32)>) {
     let file_type = "pagelinks";
 
     let pages_map = &ctx.pages_map;
     let linktarget_map = &ctx.linktarget_map;
     let redirects_map= &ctx.redirects_map;
 
-    let mut pages_links: &'static mut FxHashMap<u32, Vec<u32>> = Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default())));
+    let mut pages_links: &'static mut Vec<(u32, u32)> = Box::leak(Box::new(Vec::new()));
     let mut links_count: u64 = 0;
 
     let dump_stream = sql_dump_stream_from_cache(file_type).await
@@ -773,22 +778,14 @@ async fn parse_and_load_page_links(ctx:Arc<DumpParserContext>) -> (&'static mut 
             let _to_resolved_option = resolve_redirect(redirects_map.get(&_to), pages_map, redirects_map);
             if _to_resolved_option.is_none() {continue;}
             let _to_resolved =_to_resolved_option.unwrap();
-            if !pages_links.contains_key(&_from) {
-                pages_links.insert(_from, vec![_to_resolved]);
-            } else {
-                pages_links.entry(_from).or_default().push(_to_resolved); 
-            }
+            pages_links.push((_from, _to_resolved));
             // nextBatch.push({_from, _to: _to_resolved});
             // The link resolve to a valid page
         } else {
-            if !pages_links.contains_key(&_from) {
-                pages_links.insert(_from, vec![_to]);
-            } else {
-                pages_links.entry(_from).or_default().push(_to); 
-            }
+            pages_links.push((_from, _to));
         }
         count+=1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
             logger.log(bytes_read_amount, count);
         }
@@ -826,27 +823,44 @@ fn resolve_redirect(page_title_option:Option<&String>, pages_map: &FxHashMap<Str
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
+    
+    let total_start_time = Instant::now();
+
     let mut ctx = DumpParserContext {
         pages_map: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
         redirects_map: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
         linktarget_map: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
-        pages_links: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
+        pages_links: Box::leak(Box::new(Vec::new())),
         links_count: Box::leak(Box::new(0))
     };
+    
     println!("\nStart parsing pages dump...");
+    let start_pages = Instant::now();
     parse_and_load_page(&mut ctx).await;
+    let time_pages = start_pages.elapsed().as_secs_f64();
+    let count_pages = ctx.pages_map.len();
     println!("\nPages dump parsing complete!");
+    
     println!("\nStart parsing redirect dump...");
+    let start_redirects = Instant::now();
     parse_and_load_redirect(&mut ctx).await;
+    let time_redirects = start_redirects.elapsed().as_secs_f64();
+    let count_redirects = ctx.redirects_map.len();
     println!("\nRedirect dump parsing complete!");
+    
     println!("\nStart parsing linktarget dump...");
+    let start_linktargets = Instant::now();
     parse_and_load_link_target(&mut ctx).await;
+    let time_linktargets = start_linktargets.elapsed().as_secs_f64();
+    let count_linktargets = ctx.linktarget_map.len();
     println!("\nLinktarget dump parsing complete!");
+    
     println!("\nStart parsing page links dump...");
-
     let use_multithread = std::env::var("USE_MULTITHREAD").unwrap_or("0".to_string());
     let actx = Arc::new(ctx);
     let cctx = Arc::clone(&actx);
+    
+    let start_pagelinks = Instant::now();
     let (links_count, pages_links) = if use_multithread == "true" || use_multithread == "1" {
         let (links_count, pages_links) = launch_multithread_pagelinks_parser(actx).await;
         (links_count, pages_links)
@@ -854,25 +868,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (links_count, pages_links) = parse_and_load_page_links(actx).await;
         (links_count, pages_links)
     };
-    
+    let time_pagelinks = start_pagelinks.elapsed().as_secs_f64();
+    let count_pagelinks = *links_count as usize;
     println!("\nPage links dump parsing complete!");
 
-    println!("\nAdding page with no links");
-    for (_page_title, wiki_page_id) in cctx.pages_map.iter() {
-        let page_id = wiki_page_id.id;
-        if !pages_links.contains_key(&page_id) {
-            pages_links.insert(page_id, vec![]);
-        }
+    let start_csr = Instant::now();
+
+    println!("\nGenerating unique page IDs list");
+    let mut page_id_set = rustc_hash::FxHashSet::default();
+    for (_, wiki_page_id) in cctx.pages_map.iter() {
+        page_id_set.insert(wiki_page_id.id);
     }
+    for &(from, _) in pages_links.iter() {
+        page_id_set.insert(from);
+    }
+    let mut page_ids: Vec<u32> = page_id_set.into_iter().collect();
+    page_ids.sort_unstable();
 
     println!("\nBuilding Compressed Sparse Row Graph");
 
-    let mut logger = DumpProgressLogger::new(pages_links.len().try_into().unwrap(), "Building CSR".to_string());
+    let mut logger = DumpProgressLogger::new(page_ids.len().try_into().unwrap(), "Building CSR".to_string());
 
     println!("Creating page_id_to_index");
-
-    let mut page_ids: Vec<u32> = pages_links.keys().copied().collect();
-    page_ids.sort_unstable();
 
     let page_id_to_index: HashMap<u32, u32> = page_ids
         .iter()
@@ -884,6 +901,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let index_to_page_id: HashMap<u32, u32> = page_id_to_index.iter().map(|(&k, &v)| (v, k)).collect();
 
+    println!("Sorting edges...");
+    pages_links.sort_unstable_by_key(|&(from, _)| from);
+
     println!("Creating offsets and edges");
 
     let mut offsets:Vec<u32> = Vec::with_capacity(page_ids.len() + 1);
@@ -891,15 +911,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     offsets.push(0);
     let mut i: u32 = 0;
 
+    let mut edge_iter = pages_links.iter().peekable();
+
     for page_id in &page_ids {
-        if let Some(links) = pages_links.get(page_id) {
-            for link_page_id in links {
-                if let Some(link_index) = page_id_to_index.get(link_page_id) {
-                    edges.push(*link_index);
+        let mut link_count = 0;
+        
+        while let Some(&&(from, to)) = edge_iter.peek() {
+            if from == *page_id {
+                let (_, to) = edge_iter.next().unwrap();
+                if let Some(&to_idx) = page_id_to_index.get(&to) {
+                    edges.push(to_idx);
+                    link_count += 1;
                 }
+            } else if from < *page_id {
+                edge_iter.next(); // Skip orphan edge
+            } else {
+                break; // Moving to next page_id
             }
         }
-        offsets.push(edges.len() as u32);
+        
+        offsets.push(offsets.last().unwrap() + link_count);
 
         i += 1;
         if i % 65_536 == 0 {
@@ -960,9 +991,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nSerializing graph...");
     let bytes = to_bytes::<Error>(&graph).expect("Graph RKYV serialization failed");
-    let mut file = File::create("graph.rkyv")?;
-    file.write_all(&bytes).expect("Failed to write graph to graph.rkyv");
-    println!("Graph serialized to graph.rkyv");
+    
+    // Create the graphs directory if it doesn't exist
+    std::fs::create_dir_all("graphs").unwrap_or_default();
+    
+    let path = format!("graphs/{}/{}/graph.rkyv", *WIKI_LANG, *WIKI_DATE);
+    
+    let file_path = std::path::Path::new(&path);
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let mut file = File::create(&path)?;
+    file.write_all(&bytes).unwrap_or_else(|_| panic!("Failed to write graph to {}", path));
+    println!("Graph serialized to {}", path);
+
+    let time_csr = start_csr.elapsed().as_secs_f64();
+    let total_time_sec = total_start_time.elapsed().as_secs_f64();
+
+    let metrics = BuildMetrics {
+        language: WIKI_LANG.to_string(),
+        total_time_sec,
+        total_time_human: crate::dump_metrics::format_duration(total_time_sec),
+        pages: DumpMetrics::new(time_pages, count_pages),
+        redirects: DumpMetrics::new(time_redirects, count_redirects),
+        linktargets: DumpMetrics::new(time_linktargets, count_linktargets),
+        pagelinks: DumpMetrics::new(time_pagelinks, count_pagelinks),
+        csr_build_time_sec: time_csr,
+        csr_build_time_human: crate::dump_metrics::format_duration(time_csr),
+    };
+
+    metrics.save(&*WIKI_LANG, &*WIKI_DATE).unwrap_or_else(|_| panic!("Failed to write metrics"));
 
     Ok(())
 }

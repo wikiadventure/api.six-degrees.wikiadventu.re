@@ -1,5 +1,5 @@
 [package]
-name = "rust-serverless"
+name = "rust-graph-api"
 version = "0.1.0"
 edition = "2021"
 
@@ -18,3 +18,11 @@ num_cpus = "1.17.0"
 num_threads = "0.1.7"
 actix-cors = "0.7.1"
 rustc-hash = "2.1.1"
+libc = "0.2.186"
+
+[profile.release]
+lto = "fat"            # Enables Link Time Optimization (best performance)
+codegen-units = 1      # Compile using 1 thread to maximize optimizations 
+panic = "abort"        # Removes unwinding code (saves size & slight CPU overhead)
+strip = true           # Strips symbols from binary (reduces size)
+opt-level = 3          # Maximum optimization
