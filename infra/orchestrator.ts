@@ -3,7 +3,7 @@ import { rm, mkdir, link } from "node:fs/promises";
 import { join } from "node:path";
 import type { DumpStatus } from "./types/dumpstatus";
 
-const LANGUAGES = ["oc", "eo"] as const; 
+const LANGUAGES = ["oc", "eo", "it", "de", "fr", "en"] as const; 
 type Language = typeof LANGUAGES[number];
 
 if (!process.env.DOCKER_USERNAME) {
