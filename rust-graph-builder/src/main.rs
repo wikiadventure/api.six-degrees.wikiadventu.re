@@ -25,6 +25,8 @@ lazy_static! {
         env::var("WIKI_LANG").expect("WIKI_LANG environment variable not set");
     static ref WIKI_DATE: String =
         env::var("WIKI_DATE").expect("WIKI_DATE environment variable not set");
+    static ref WIKI_DUMP_MIRROR: String =
+        env::var("WIKI_DUMP_MIRROR").unwrap_or_else(|_| "https://dumps.wikimedia.org/".to_string());
 }
 
 #[derive(Archive, Serialize, Deserialize, Debug, PartialEq)]
@@ -57,7 +59,9 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
             file_handle_for_progress: progress_handle,
         });
     }
-    let url = format!("https://dumps.wikimedia.org/{}wiki/{}/{}wiki-{}-{}.sql.gz",  &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
+    
+    let base_url = WIKI_DUMP_MIRROR.trim_end_matches('/');
+    let url = format!("{}/{}wiki/{}/{}wiki-{}-{}.sql.gz", base_url, &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     println!("Downloading {}...", url);
 
     let client = Client::new();
@@ -69,13 +73,16 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
         .unwrap()
         .progress_chars("#>-"));
     let file_path = std::path::Path::new(&path);
+    let part_path = format!("{}.part", path);
+    let part_file_path = std::path::Path::new(&part_path);
 
     // Create parent directory if it doesn't exist
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut file = std::fs::File::create(file_path)?;
+    use tokio::io::AsyncWriteExt;
+    let mut file = tokio::fs::File::create(part_file_path).await?;
     
     let mut downloaded: u64 = 0;
     let mut last_log_time = Instant::now();
@@ -84,7 +91,7 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
     // Note: `res` must be mutable to be read from.
     while let Some(chunk) = res.chunk().await? {
         let chunk_len = chunk.len() as u64;
-        file.write_all(&chunk)?;
+        file.write_all(&chunk).await?; // Non-blocking write
         pb.inc(chunk_len);
         downloaded += chunk_len;
 
@@ -99,6 +106,10 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
             last_log_time = Instant::now();
         }
     }
+    file.flush().await?;
+    drop(file); // Ensure file is closed before renaming
+    tokio::fs::rename(part_file_path, file_path).await?;
+
     pb.finish_with_message("Downloaded");
     // Open the newly downloaded file
     let saved_file = std::fs::File::open(file_path)?;
@@ -126,7 +137,9 @@ async fn sql_dump_download_gunzipped(file_type: &str) -> Result<(), Box<dyn std:
         println!("Using cached file: {}", path);
         return Ok(());
     }
-    let url = format!("https://dumps.wikimedia.org/{}wiki/{}/{}wiki-{}-{}.sql.gz",  &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
+    
+    let base_url = WIKI_DUMP_MIRROR.trim_end_matches('/');
+    let url = format!("{}/{}wiki/{}/{}wiki-{}-{}.sql.gz", base_url, &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     println!("Downloading {}...", url);
 
     let client = Client::new();
@@ -137,14 +150,16 @@ async fn sql_dump_download_gunzipped(file_type: &str) -> Result<(), Box<dyn std:
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
         .unwrap()
         .progress_chars("#>-"));
-    let file_path = std::path::Path::new(&path);
+    
+    let part_path = format!("{}.part", path);
+    let part_file_path = std::path::Path::new(&part_path);
 
     // Create parent directory if it doesn't exist
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let file = tokio::fs::File::create(file_path).await?;
+    let file = tokio::fs::File::create(part_file_path).await?;
     let mut compat_file = file.compat_write();
 
     let mut downloaded_size: u64 = 0;
@@ -181,6 +196,10 @@ async fn sql_dump_download_gunzipped(file_type: &str) -> Result<(), Box<dyn std:
     let mut decoder = GzipDecoder::new(BufReader::new(reader));
 
     futures::io::copy(&mut decoder, &mut compat_file).await?;
+    
+    // Close the file compatibility layer to ensure writes are flushed
+    compat_file.close().await?;
+    tokio::fs::rename(part_file_path, file_path).await?;
 
     pb.finish_with_message("Downloaded");
     Ok(())

@@ -121,7 +121,8 @@ async function generateGraph(lang: Language, date: string) {
   console.log(`[${lang}] Running data processor (rust-graph-builder)...`);
   // Using WIKI_LANG or CLI args depending on your rust implementation.
   // We navigate to the parent repository root to execute the compiled binary.
-  await $`cd .. && WIKI_LANG=${lang} WIKI_DATE=${date} ./rust-graph-builder/target/release/rust-graph-builder`;
+  const mirrorUrl = "https://ftp.acc.umu.se/mirror/wikimedia.org/dumps/";
+  await $`cd .. && WIKI_DUMP_MIRROR=${mirrorUrl} WIKI_LANG=${lang} WIKI_DATE=${date} ./rust-graph-builder/target/release/rust-graph-builder`;
 }
 
 // region: Docker build & push
