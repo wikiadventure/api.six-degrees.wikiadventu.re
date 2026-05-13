@@ -18,6 +18,8 @@ services:
       # Let's Encrypt configuration via OVH DNS Challenge
       - "--certificatesresolvers.myresolver.acme.dnschallenge=true"
       - "--certificatesresolvers.myresolver.acme.dnschallenge.provider=ovh"
+      - "--certificatesresolvers.myresolver.acme.dnschallenge.delaybeforecheck=120"
+      - "--certificatesresolvers.myresolver.acme.dnschallenge.resolvers=ns10.ovh.net:53,dns10.ovh.net:53"
       - "--certificatesresolvers.myresolver.acme.email=admin@wikiadventu.re"
       - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
     environment:
