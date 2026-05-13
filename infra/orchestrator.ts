@@ -178,8 +178,8 @@ async function generateDockerCompose() {
     const serviceName = `api-${lang}`;
     // We explicitly instruct Docker Compose to use the optimized local tag
     const imageTag = `${DOCKER_IMAGE_PREFIX}-${lang}:local-optimized`;
-    // Traefik dynamically routes via host: lang.six-degrees.wikiadventu.re
-    const traefikRule = `Host(\`${lang}.six-degrees.wikiadventu.re\`)`;
+    // Traefik dynamically routes via host: lang.api.six-degrees.wikiadventu.re
+    const traefikRule = `Host(\`${lang}.api.six-degrees.wikiadventu.re\`)`;
     
     composeContent += `
   ${serviceName}:
@@ -193,6 +193,8 @@ async function generateDockerCompose() {
       - "traefik.http.routers.${serviceName}.rule=${traefikRule}"
       - "traefik.http.routers.${serviceName}.entrypoints=websecure"
       - "traefik.http.routers.${serviceName}.tls.certresolver=myresolver"
+      - "traefik.http.routers.${serviceName}.tls.domains[0].main=api.six-degrees.wikiadventu.re"
+      - "traefik.http.routers.${serviceName}.tls.domains[0].sans=*.api.six-degrees.wikiadventu.re"
       # Assuming your API runs on port 8080 internally, adjust if different
       - "traefik.http.services.${serviceName}.loadbalancer.server.port=8080"
 `;
