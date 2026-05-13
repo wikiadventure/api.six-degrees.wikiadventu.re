@@ -79,7 +79,7 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
     
     let mut downloaded: u64 = 0;
     let mut last_log_time = Instant::now();
-    let log_interval = Duration::from_secs(10);
+    let log_interval = Duration::from_secs(15);
 
     // Note: `res` must be mutable to be read from.
     while let Some(chunk) = res.chunk().await? {
@@ -149,7 +149,7 @@ async fn sql_dump_download_gunzipped(file_type: &str) -> Result<(), Box<dyn std:
 
     let mut downloaded_size: u64 = 0;
     let mut last_log_time = Instant::now();
-    let log_interval = Duration::from_secs(10);
+    let log_interval = Duration::from_secs(15);
     let url_clone = url.clone();
     let pb_clone = Arc::clone(&pb);
 
@@ -444,7 +444,7 @@ async fn multithread_parse_and_load_page_links(read_ctx:&Arc<DumpParserContext>,
             }
         }
         count+=1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0) - start_offset;
             logger.log(bytes_read_amount, count);
         }
@@ -608,7 +608,7 @@ async fn parse_and_load_page(ctx: &mut DumpParserContext) {
         };
         pages_map.insert(page_title, wiki_page_id);
         count += 1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
             logger.log(bytes_read_amount, count);
         }
@@ -660,7 +660,7 @@ async fn parse_and_load_redirect(ctx: &mut DumpParserContext) {
         let _to = _to_is_redirect.id;
         let is_redirect = _to_is_redirect.is_redirect;
         count += 1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
             logger.log(bytes_read_amount, count);
         }
@@ -687,7 +687,7 @@ async fn parse_and_load_redirect(ctx: &mut DumpParserContext) {
     //     // nextBatch.push({_from, _to});
             
     //     count += 1;
-    //     if (count % 65_536) == 0 {
+    //     if (count % 262_144) == 0 {
     //         let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
     //         logger.log(bytes_read_amount, count);
     //     }
@@ -720,7 +720,7 @@ async fn parse_and_load_link_target(ctx: &mut DumpParserContext) {
         let lt_id = raw_lt_id.parse().expect("lt_id is not a valid u32");
         linktarget_map.insert(lt_id,lt_title);
         count+=1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
             logger.log(bytes_read_amount, count);
         }
@@ -789,7 +789,7 @@ async fn parse_and_load_page_links(ctx:Arc<DumpParserContext>) -> (&'static mut 
             }
         }
         count+=1;
-        if (count % 65_536) == 0 {
+        if (count % 262_144) == 0 {
             let bytes_read_amount = progress_handle.stream_position().unwrap_or(0);
             logger.log(bytes_read_amount, count);
         }
