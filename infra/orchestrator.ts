@@ -8,8 +8,8 @@ const DOCKER_IMAGE_PREFIX = "sacramentix1225/six-degrees-api"; // Replace with y
  * Step 0: Build the Data Processor upfront
  */
 async function buildDataProcessor() {
-  console.log("Building data processor (sql-dump-to-rust)...");
-  await $`cd .. && cargo build --release --manifest-path=sql-dump-to-rust/Cargo.toml`;
+  console.log("Building data processor (rust-graph-builder)...");
+  await $`cd .. && cargo build --release --manifest-path=rust-graph-builder/Cargo.toml`;
 }
 
 /**
@@ -33,10 +33,10 @@ async function loginToDocker() {
  * Step 1: Run the Data Processor to generate graph.rkyv for a given language
  */
 async function generateGraph(lang: string) {
-  console.log(`[${lang}] Running data processor (sql-dump-to-rust)...`);
+  console.log(`[${lang}] Running data processor (rust-graph-builder)...`);
   // Using WIKI_LANG or CLI args depending on your rust implementation.
   // We navigate to the parent repository root to execute the compiled binary.
-  await $`cd .. && WIKI_LANG=${lang} ./sql-dump-to-rust/target/release/sql-dump-to-rust`;
+  await $`cd .. && WIKI_LANG=${lang} ./rust-graph-builder/target/release/rust-graph-builder`;
 }
 
 /**
@@ -53,7 +53,7 @@ async function buildAndPushDockerImages(lang: string) {
   
   // 1. Build & Push Generic Image (No specific CPU constraints)
   console.log(`[${lang}] Building GENERIC image for Docker Hub...`);
-  await $`cd .. && docker build -f dockerfile.serverless -t ${genericTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS="" .`;
+  await $`cd .. && docker build -f dockerfile.graph-api -t ${genericTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS="" .`;
   console.log(`[${lang}] Pushing GENERIC image to registry...`);
   await $`docker push ${genericTag}`;
   console.log(`[${lang}] Removing GENERIC image locally to save disk space...`);
@@ -62,7 +62,7 @@ async function buildAndPushDockerImages(lang: string) {
   // 2. Build Hardware Optimized Image (Don't push, keep local)
   console.log(`[${lang}] Building OPTIMIZED image for Hetzner server...`);
   const optFlags = process.env.OPTIMIZED_RUSTFLAGS || "-C target-cpu=znver2";
-  await $`cd .. && docker build -f dockerfile.serverless -t ${localOptimizedTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS=${optFlags} .`;
+  await $`cd .. && docker build -f dockerfile.graph-api -t ${localOptimizedTag} --build-arg WIKI_LANG=${lang} --build-arg CUSTOM_RUSTFLAGS=${optFlags} .`;
 
   // Cleanup the hard link
   await $`cd .. && rm graph.rkyv`;

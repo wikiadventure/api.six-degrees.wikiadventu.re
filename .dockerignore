@@ -6,9 +6,9 @@
 .env
 .env.docker
 .env.prod
-sql-dump-to-rust/target
-sql-dump-to-rust/cache
-rust-serverless/target
+rust-graph-builder/target
+rust-graph-builder/cache
+rust-graph-api/target
 cache
 **/*.rkyv
 !graph.rkyv

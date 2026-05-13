@@ -24,14 +24,14 @@ ENV PATH="/root/.cargo/bin:$PATH"
 # Install the musl target
 RUN rustup target add x86_64-unknown-linux-musl
 
-# Copy the source code for sql-dump-to-rust and rust-serverless
-COPY ./sql-dump-to-rust /build/sql-dump-to-rust
+# Copy the source code for rust-graph-builder and rust-graph-api
+COPY ./rust-graph-builder /build/rust-graph-builder
 
-RUN cd /build/sql-dump-to-rust && cargo build --release --target x86_64-unknown-linux-musl
+RUN cd /build/rust-graph-builder && cargo build --release --target x86_64-unknown-linux-musl
 
-COPY ./rust-serverless /build/rust-serverless
+COPY ./rust-graph-api /build/rust-graph-api
 
-RUN cd /build/rust-serverless && cargo build --release --target x86_64-unknown-linux-musl
+RUN cd /build/rust-graph-api && cargo build --release --target x86_64-unknown-linux-musl
 
 FROM docker:dind
 
@@ -40,9 +40,9 @@ RUN apk add --no-cache \
         openssl-dev \
         libgcc
 
-COPY --from=build /build/sql-dump-to-rust/target/x86_64-unknown-linux-musl/release/sql-dump-to-rust /build/sql-dump-to-rust
-COPY --from=build /build/rust-serverless/target/x86_64-unknown-linux-musl/release/rust-serverless /prod/rust-serverless
-COPY dockerfile.serverless /prod/dockerfile
+COPY --from=build /build/rust-graph-builder/target/x86_64-unknown-linux-musl/release/rust-graph-builder /build/rust-graph-builder
+COPY --from=build /build/rust-graph-api/target/x86_64-unknown-linux-musl/release/rust-graph-api /prod/rust-graph-api
+COPY dockerfile.graph-api /prod/dockerfile
 COPY entrypointGCP.sh entrypointGCP.sh
 
 # Install gcloud CLI

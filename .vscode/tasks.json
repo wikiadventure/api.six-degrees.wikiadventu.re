@@ -21,9 +21,9 @@
 			}
 		},
 		{
-			"label": "build-rust-serverless",
+			"label": "build-rust-graph-api",
 			"type": "shell",
-			"command": "mise exec -- cargo build --package=rust-serverless",
+			"command": "mise exec -- cargo build --package=rust-graph-api",
 			"group": {
 				"kind": "build",
 				"isDefault": true
@@ -32,13 +32,13 @@
 				"$rustc"
 			],
 			"options": {
-				"cwd": "${workspaceFolder}/rust-serverless"
+				"cwd": "${workspaceFolder}/rust-graph-api"
 			}
 		},
 		{
-			"label": "build-sql-dump-to-rust",
+			"label": "build-rust-graph-builder",
 			"type": "shell",
-			"command": "mise exec -- cargo build --package=sql-dump-to-rust",
+			"command": "mise exec -- cargo build --package=rust-graph-builder",
 			"group": {
 				"kind": "build",
 				"isDefault": true
@@ -47,7 +47,7 @@
 				"$rustc"
 			],
 			"options": {
-				"cwd": "${workspaceFolder}/sql-dump-to-rust"
+				"cwd": "${workspaceFolder}/rust-graph-builder"
 			}
 		}
 	]

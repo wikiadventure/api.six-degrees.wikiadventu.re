@@ -1332,7 +1332,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-serverless"
+name = "rust-graph-api"
 version = "0.1.0"
 dependencies = [
  "actix-cors",

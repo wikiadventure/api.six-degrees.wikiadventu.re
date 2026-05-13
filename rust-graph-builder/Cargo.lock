@@ -1201,6 +1201,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-graph-builder"
+version = "0.1.0"
+dependencies = [
+ "async-compression",
+ "async-gen",
+ "async-stream",
+ "async-trait",
+ "bytes",
+ "dotenv",
+ "flate2",
+ "futures",
+ "futures-core",
+ "futures-util",
+ "indicatif",
+ "lazy_static",
+ "num_threads",
+ "once_cell",
+ "regex",
+ "reqwest",
+ "rkyv",
+ "rustc-hash",
+ "sysinfo",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "utf8-chars",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,35 +1422,6 @@ checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "sql-dump-to-rust"
-version = "0.1.0"
-dependencies = [
- "async-compression",
- "async-gen",
- "async-stream",
- "async-trait",
- "bytes",
- "dotenv",
- "flate2",
- "futures",
- "futures-core",
- "futures-util",
- "indicatif",
- "lazy_static",
- "num_threads",
- "once_cell",
- "regex",
- "reqwest",
- "rkyv",
- "rustc-hash",
- "sysinfo",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "utf8-chars",
 ]
 
 [[package]]
