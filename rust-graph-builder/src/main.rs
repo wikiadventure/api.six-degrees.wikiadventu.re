@@ -346,18 +346,13 @@ async fn multithreaded_pagelink_dump_parser(file:File, start_offset:u64, end_off
     }
 }}
 
-struct MultithreadSharedReadContext {
-    pub pages_map: &'static HashMap<String, WikiPageId, FxBuildHasher>,
-    pub redirects_map: &'static HashMap<u32, String, FxBuildHasher>,
-    pub linktarget_map: &'static HashMap<u32, String, FxBuildHasher>,
-}
 
 struct MultithreadWriteContext {
-    pub pages_links: HashMap<u32, Vec<u32>, FxBuildHasher>,
+    pub pages_links: Vec<(u32, u32)>,
     pub links_count: u64,
 }
 
-async fn launch_multithread_pagelinks_parser(ctx: Arc<DumpParserContext>) -> (&'static mut u64, &'static mut HashMap<u32, Vec<u32>, FxBuildHasher>) {
+async fn launch_multithread_pagelinks_parser(ctx: Arc<DumpParserContext>) -> (&'static mut u64, &'static mut Vec<(u32, u32)>) {
     let file_type = "pagelinks";
     sql_dump_download_gunzipped(file_type).await.expect("Failed to download pagelinks dump");
     let file_path = format!("cache/{}/{}/{}wiki-{}-{}.sql", &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
@@ -378,7 +373,7 @@ async fn launch_multithread_pagelinks_parser(ctx: Arc<DumpParserContext>) -> (&'
         .map(|(i,(start_offset, end_offset))| {
             let read_ctx = Arc::clone(&ctx);
             let write_ctx = Arc::new(Mutex::new(MultithreadWriteContext {
-                pages_links: FxHashMap::with_hasher(FxBuildHasher::default()),
+                pages_links: Vec::new(),
                 links_count: 0,
             }));
             let file_path_clone = file_path.clone();
@@ -393,17 +388,14 @@ async fn launch_multithread_pagelinks_parser(ctx: Arc<DumpParserContext>) -> (&'
         })
         .collect();
 
-    let mut all_pages_links: &'static mut FxHashMap<u32, Vec<u32>> = Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default())));
+    let mut all_pages_links: &'static mut Vec<(u32, u32)> = Box::leak(Box::new(Vec::new()));
     let mut all_links_count: u64 = 0;
     
     for (write_ctx, handle) in write_context_with_handles {
         handle.await.expect("Thread panicked");
         let mut write = write_ctx.try_lock().expect("Write context is locked");
         all_links_count += write.links_count;
-        for (key, value) in write.pages_links.drain() {
-            all_pages_links.entry(key).or_insert_with(Vec::new).extend(value);
-        }
-
+        all_pages_links.extend(write.pages_links.drain(..));
     }
     let all_links_count_static: &'static mut u64 = Box::leak(Box::new(all_links_count));
 
@@ -449,19 +441,11 @@ async fn multithread_parse_and_load_page_links(read_ctx:&Arc<DumpParserContext>,
             let _to_resolved_option = resolve_redirect(redirects_map.get(&_to), pages_map, redirects_map);
             if _to_resolved_option.is_none() {continue;}
             let _to_resolved =_to_resolved_option.unwrap();
-            if !write.pages_links.contains_key(&_from) {
-                write.pages_links.insert(_from, vec![_to_resolved]);
-            } else {
-                write.pages_links.entry(_from).or_default().push(_to_resolved); 
-            }
+            write.pages_links.push((_from, _to_resolved));
             // nextBatch.push({_from, _to: _to_resolved});
             // The link resolve to a valid page
         } else {
-            if !write.pages_links.contains_key(&_from) {
-                write.pages_links.insert(_from, vec![_to]);
-            } else {
-                write.pages_links.entry(_from).or_default().push(_to); 
-            }
+            write.pages_links.push((_from, _to));
         }
         count+=1;
         if (count % 262_144) == 0 {
@@ -592,7 +576,7 @@ pub struct DumpParserContext {
     pub pages_map: &'static mut FxHashMap<String, WikiPageId>,
     pub redirects_map: &'static mut FxHashMap<u32, String>,
     pub linktarget_map: &'static mut FxHashMap<u32, String>,
-    pub pages_links: &'static mut FxHashMap<u32, Vec<u32>>,
+    pub pages_links: &'static mut Vec<(u32, u32)>,
     pub links_count: &'static mut u64,
 }
 
@@ -753,14 +737,14 @@ async fn parse_and_load_link_target(ctx: &mut DumpParserContext) {
 
 }
 
-async fn parse_and_load_page_links(ctx:Arc<DumpParserContext>) -> (&'static mut u64, &'static mut HashMap<u32, Vec<u32>, FxBuildHasher>) {
+async fn parse_and_load_page_links(ctx:Arc<DumpParserContext>) -> (&'static mut u64, &'static mut Vec<(u32, u32)>) {
     let file_type = "pagelinks";
 
     let pages_map = &ctx.pages_map;
     let linktarget_map = &ctx.linktarget_map;
     let redirects_map= &ctx.redirects_map;
 
-    let mut pages_links: &'static mut FxHashMap<u32, Vec<u32>> = Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default())));
+    let mut pages_links: &'static mut Vec<(u32, u32)> = Box::leak(Box::new(Vec::new()));
     let mut links_count: u64 = 0;
 
     let dump_stream = sql_dump_stream_from_cache(file_type).await
@@ -794,19 +778,11 @@ async fn parse_and_load_page_links(ctx:Arc<DumpParserContext>) -> (&'static mut 
             let _to_resolved_option = resolve_redirect(redirects_map.get(&_to), pages_map, redirects_map);
             if _to_resolved_option.is_none() {continue;}
             let _to_resolved =_to_resolved_option.unwrap();
-            if !pages_links.contains_key(&_from) {
-                pages_links.insert(_from, vec![_to_resolved]);
-            } else {
-                pages_links.entry(_from).or_default().push(_to_resolved); 
-            }
+            pages_links.push((_from, _to_resolved));
             // nextBatch.push({_from, _to: _to_resolved});
             // The link resolve to a valid page
         } else {
-            if !pages_links.contains_key(&_from) {
-                pages_links.insert(_from, vec![_to]);
-            } else {
-                pages_links.entry(_from).or_default().push(_to); 
-            }
+            pages_links.push((_from, _to));
         }
         count+=1;
         if (count % 262_144) == 0 {
@@ -854,7 +830,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pages_map: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
         redirects_map: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
         linktarget_map: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
-        pages_links: Box::leak(Box::new(FxHashMap::with_hasher(FxBuildHasher::default()))),
+        pages_links: Box::leak(Box::new(Vec::new())),
         links_count: Box::leak(Box::new(0))
     };
     
@@ -898,22 +874,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let start_csr = Instant::now();
 
-    println!("\nAdding page with no links");
-    for (_page_title, wiki_page_id) in cctx.pages_map.iter() {
-        let page_id = wiki_page_id.id;
-        if !pages_links.contains_key(&page_id) {
-            pages_links.insert(page_id, vec![]);
-        }
+    println!("\nGenerating unique page IDs list");
+    let mut page_id_set = rustc_hash::FxHashSet::default();
+    for (_, wiki_page_id) in cctx.pages_map.iter() {
+        page_id_set.insert(wiki_page_id.id);
     }
+    for &(from, _) in pages_links.iter() {
+        page_id_set.insert(from);
+    }
+    let mut page_ids: Vec<u32> = page_id_set.into_iter().collect();
+    page_ids.sort_unstable();
 
     println!("\nBuilding Compressed Sparse Row Graph");
 
-    let mut logger = DumpProgressLogger::new(pages_links.len().try_into().unwrap(), "Building CSR".to_string());
+    let mut logger = DumpProgressLogger::new(page_ids.len().try_into().unwrap(), "Building CSR".to_string());
 
     println!("Creating page_id_to_index");
-
-    let mut page_ids: Vec<u32> = pages_links.keys().copied().collect();
-    page_ids.sort_unstable();
 
     let page_id_to_index: HashMap<u32, u32> = page_ids
         .iter()
@@ -925,6 +901,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let index_to_page_id: HashMap<u32, u32> = page_id_to_index.iter().map(|(&k, &v)| (v, k)).collect();
 
+    println!("Sorting edges...");
+    pages_links.sort_unstable_by_key(|&(from, _)| from);
+
     println!("Creating offsets and edges");
 
     let mut offsets:Vec<u32> = Vec::with_capacity(page_ids.len() + 1);
@@ -932,15 +911,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     offsets.push(0);
     let mut i: u32 = 0;
 
+    let mut edge_iter = pages_links.iter().peekable();
+
     for page_id in &page_ids {
-        if let Some(links) = pages_links.get(page_id) {
-            for link_page_id in links {
-                if let Some(link_index) = page_id_to_index.get(link_page_id) {
-                    edges.push(*link_index);
+        let mut link_count = 0;
+        
+        while let Some(&&(from, to)) = edge_iter.peek() {
+            if from == *page_id {
+                let (_, to) = edge_iter.next().unwrap();
+                if let Some(&to_idx) = page_id_to_index.get(&to) {
+                    edges.push(to_idx);
+                    link_count += 1;
                 }
+            } else if from < *page_id {
+                edge_iter.next(); // Skip orphan edge
+            } else {
+                break; // Moving to next page_id
             }
         }
-        offsets.push(edges.len() as u32);
+        
+        offsets.push(offsets.last().unwrap() + link_count);
 
         i += 1;
         if i % 65_536 == 0 {
