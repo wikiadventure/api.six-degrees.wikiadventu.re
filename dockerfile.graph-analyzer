@@ -8,7 +8,7 @@ COPY rust-graph-builder ./rust-graph-builder
 COPY rust-graph-analyzer ./rust-graph-analyzer
 COPY rust-graph-api ./rust-graph-api
 
-WORKDIR /usr/src/app/rust-graph-api
+WORKDIR /usr/src/app/rust-graph-analyzer
 
 # Accept custom hardware optimization flags dynamically
 ARG CUSTOM_RUSTFLAGS=""
@@ -21,6 +21,6 @@ FROM gcr.io/distroless/cc-debian12:nonroot
 
 WORKDIR /app
 COPY graph.rkyv /app/graph.rkyv
-COPY --from=builder /usr/src/app/target/release/rust-graph-api /app/rust-graph-api
+COPY --from=builder /usr/src/app/target/release/rust-graph-analyzer /app/rust-graph-analyzer
 
-CMD ["./rust-graph-api"]
+CMD ["./rust-graph-analyzer"]
