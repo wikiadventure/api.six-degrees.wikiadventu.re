@@ -1,3 +1,4 @@
+use rust_graph_types::{CsrGraph, ArchivedCsrGraph};
 use async_gen::futures_core::Stream;
 use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -30,15 +31,6 @@ lazy_static! {
         env::var("WIKI_DUMP_MIRROR").unwrap_or_else(|_| "https://dumps.wikimedia.org/".to_string());
 }
 
-#[derive(Archive, Serialize, Deserialize, Debug, PartialEq)]
-struct CsrGraph {
-    offsets: Vec<u32>,
-    edges: Vec<u32>,
-    reverse_offsets: Vec<u32>,
-    reverse_edges: Vec<u32>,
-    page_id_to_index: HashMap<u32, u32>,
-    index_to_page_id: HashMap<u32, u32>,
-}
 
 pub struct SqlDumpStream {
     pub decoder: GzDecoder<File>,

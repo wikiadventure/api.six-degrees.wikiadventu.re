@@ -6,6 +6,7 @@ use once_cell::sync::Lazy; // Import Lazy
 use rayon::prelude::*;
 use rkyv::rend::u32_le;
 use rkyv::{Archive, Deserialize, Serialize};
+use rust_graph_types::{CsrGraph, ArchivedCsrGraph};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 use std::collections::HashMap;
 use std::fs::File;
@@ -17,15 +18,6 @@ pub struct PageId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeIdx(pub u32);
 
-#[derive(Archive, Serialize, Deserialize, Debug, PartialEq)]
-struct CsrGraph {
-    offsets: Vec<u32>,
-    edges: Vec<u32>,
-    reverse_offsets: Vec<u32>,
-    reverse_edges: Vec<u32>,
-    page_id_to_index: HashMap<u32, u32>,
-    index_to_page_id: HashMap<u32, u32>,
-}
 
 // Define a global static variable for the graph.
 // It will be initialized exactly once, on the first time it's accessed.
