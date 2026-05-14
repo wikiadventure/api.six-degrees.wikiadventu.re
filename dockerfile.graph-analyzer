@@ -16,11 +16,12 @@ ENV RUSTFLAGS="${CUSTOM_RUSTFLAGS}"
 
 RUN cargo build --release
 
-# Distroless 'cc' image includes glibc and libgcc, required by standard Rust builds
-FROM gcr.io/distroless/cc-debian12:nonroot
+# Use the API image as the runtime base. 
+# Docker will 100% cache and perfectly share the 1.5GB graph layer and OS!
+FROM sacramentix1225/six-degrees-api-en:latest
 
-WORKDIR /app
-COPY graph.rkyv /app/graph.rkyv
+# The graph is ALREADY at /app/graph.rkyv, no need to copy it!
+# Just add the newly compiled analyzer binary to the /app folder.
 COPY --from=builder /usr/src/app/target/release/rust-graph-analyzer /app/rust-graph-analyzer
 
 CMD ["./rust-graph-analyzer"]
