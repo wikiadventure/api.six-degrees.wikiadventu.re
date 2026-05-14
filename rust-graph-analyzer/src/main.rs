@@ -8,6 +8,7 @@ use std::time::Instant;
 
 mod lcc;
 mod ifub;
+mod top_paths;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -26,6 +27,12 @@ enum Commands {
     Lcc,
     /// Run iFUB for Exact Diameter
     Ifub,
+    /// Approximate highest distinct shortest-path count pairs
+    TopPaths {
+        /// Number of candidate source/sink nodes to sample
+        #[arg(short, long, default_value_t = 20)]
+        candidates: usize,
+    },
 }
 
 #[derive(Serialize)]
@@ -59,6 +66,9 @@ fn main() {
         }
         Commands::Ifub => {
             ("ifub", ifub::run(archived_graph))
+        }
+        Commands::TopPaths { candidates } => {
+            ("top_paths", top_paths::run(archived_graph, *candidates))
         }
     };
     let time_ms = start_algo.elapsed().as_millis();
