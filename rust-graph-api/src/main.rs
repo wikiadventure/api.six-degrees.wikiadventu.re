@@ -18,6 +18,7 @@ pub struct PageId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeIdx(pub u32);
 
+const MAX_PATHS_TO_RETURN: usize = 1000;
 
 // Define a global static variable for the graph.
 // It will be initialized exactly once, on the first time it's accessed.
@@ -308,11 +309,14 @@ async fn all_shortest_path(
 
     let num_paths = paths.len();
     let shortest_path_length = paths.iter().map(|path| path.len()).min().unwrap_or(0);
+    let limited_paths: Vec<_> = paths.iter().take(MAX_PATHS_TO_RETURN).cloned().collect();
 
     let response = serde_json::json!({
-        "paths": paths,
+        "paths": limited_paths,
         "num_paths": num_paths,
         "shortest_path_length": shortest_path_length,
+        "path_limit": MAX_PATHS_TO_RETURN,
+        "truncated": num_paths > MAX_PATHS_TO_RETURN,
         "time_spent_ms": elapsed_time.as_millis()
     });
 
