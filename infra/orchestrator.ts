@@ -190,6 +190,9 @@ async function generateDockerCompose() {
   ${serviceName}:
     image: "${imageTag}"
     container_name: "${serviceName}"
+    environment:
+      - WIKI_LANG=${lang}
+      - REDIS_URL=redis://redis-cache:6379
     restart: unless-stopped
     networks:
       - web
@@ -218,6 +221,9 @@ async function deployServices(lang: Language) {
   console.log(`[Deploy] Updating container for ${serviceName} with local optimized image...`);
   // Note: We deliberately SKIP 'docker compose pull' so it doesn't overwrite our local-optimized image
   await $`docker compose up -d ${serviceName}`;
+  
+  console.log(`[Deploy] Purging redis cache for language ${lang}...`);
+  await $`docker exec redis-cache sh -c "redis-cli --scan --pattern '${lang}:*' | xargs -r redis-cli del"`;
   
   // Clean up dangling images to save disk space on Hetzner
   await $`docker image prune -f`;

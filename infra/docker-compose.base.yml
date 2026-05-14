@@ -36,3 +36,11 @@ services:
     restart: unless-stopped
     networks:
       - web
+
+  redis-cache:
+    image: "redis:alpine"
+    container_name: "redis-cache"
+    command: redis-server --maxmemory 5gb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - web
