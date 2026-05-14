@@ -221,7 +221,7 @@ async function deployServices(lang: Language) {
   const serviceName = `api-${lang}`;
   console.log(`[Deploy] Updating container for ${serviceName} with local optimized image...`);
   // Note: We deliberately SKIP 'docker compose pull' so it doesn't overwrite our local-optimized image
-  await $`docker compose up -d ${serviceName}`;
+  await $`docker compose up -d traefik redis-cache ${serviceName}`;
   
   console.log(`[Deploy] Purging redis cache for language ${lang}...`);
   await $`docker exec redis-cache sh -c "redis-cli --scan --pattern '${lang}:*' | xargs -r redis-cli del"`;
