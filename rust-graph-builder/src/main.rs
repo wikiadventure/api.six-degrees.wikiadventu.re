@@ -31,6 +31,101 @@ lazy_static! {
         env::var("WIKI_DUMP_MIRROR").unwrap_or_else(|_| "https://dumps.wikimedia.org/".to_string());
 }
 
+// ---------------------------------------------------------------------------
+// Wikimedia Robot Policy compliance
+// See: https://www.mediawiki.org/wiki/Robot_policy
+// User-Agent policy: https://meta.wikimedia.org/wiki/User-Agent_policy
+// ---------------------------------------------------------------------------
+
+/// Bot name for the User-Agent header.
+/// Configurable via BOT_NAME env var.
+const BOT_NAME: &str = "SixDegreeGraphBuilder";
+
+/// Bot homepage URL embedded in the User-Agent header.
+const BOT_URL: &str = "https://six-degrees.wikiadventu.re";
+
+/// Source code URL embedded in the User-Agent header.
+const BOT_SOURCE_URL: &str = "https://github.com/wikiadventure/six-degrees.wikiadventu.re";
+
+/// Operator contact (email) embedded in the User-Agent header.
+const BOT_CONTACT: &str = "benji.u1225u@gmail.com";
+
+/// Maximum number of retry attempts when receiving 429 Too Many Requests.
+const MAX_RETRIES: u32 = 5;
+
+/// Default delay (seconds) before retrying when no Retry-After header is provided.
+const DEFAULT_RETRY_DELAY_SECS: u64 = 30;
+
+/// Build a reqwest::Client that complies with the Wikimedia Robot Policy:
+///
+/// - **User-Agent**: identifies the bot, its version, homepage, source code and operator contact
+///   per <https://meta.wikimedia.org/wiki/User-Agent_policy>.
+/// - **Accept-Encoding: gzip**: requested automatically when `gzip(true)` is set, reducing
+///   bandwidth as required by the policy.
+fn build_wiki_compliant_client() -> Client {
+    let user_agent = format!(
+        "{} ({}; {}; mailto:{})",
+        BOT_NAME,
+        BOT_URL,
+        BOT_SOURCE_URL,
+        BOT_CONTACT,
+    );
+    println!("Robot Policy: User-Agent = {}", user_agent);
+    println!("Robot Policy: Using Wikimedia Dumps (offline data) per recommended practice.");
+
+    Client::builder()
+        .user_agent(&user_agent)
+        .build()
+        .expect("Failed to build HTTP client")
+}
+
+/// Perform an HTTP GET request with retry logic for 429 Too Many Requests.
+///
+/// Per the Wikimedia Robot Policy:
+/// - Respects the `Retry-After` header sent with 429 responses.
+/// - Retries up to `MAX_RETRIES` times with exponential back-off when no header is present.
+async fn get_with_retry(
+    client: &Client,
+    url: &str,
+) -> Result<reqwest::Response, Box<dyn std::error::Error>> {
+    let mut attempt = 0u32;
+    loop {
+        // Accept-Encoding: gzip — required by Robot Policy to reduce bandwidth.
+        // Dump files are .gz and decompressed client-side; this header signals
+        // willingness to accept gzip-encoded HTTP transfer as well.
+        let response = client
+            .get(url)
+            .header(reqwest::header::ACCEPT_ENCODING, "gzip")
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            attempt += 1;
+            if attempt > MAX_RETRIES {
+                return Err(format!(
+                    "Exceeded maximum retries ({}) for 429 Too Many Requests on {}",
+                    MAX_RETRIES, url
+                ).into());
+            }
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(DEFAULT_RETRY_DELAY_SECS);
+
+            println!(
+                "Robot Policy: Received 429 Too Many Requests for {}. \
+                 Waiting {}s before retry (attempt {}/{})...",
+                url, retry_after, attempt, MAX_RETRIES
+            );
+            tokio::time::sleep(Duration::from_secs(retry_after)).await;
+            continue;
+        }
+        let response = response.error_for_status()?;
+        return Ok(response);
+    }
+}
+
 
 pub struct SqlDumpStream {
     pub decoder: GzDecoder<File>,
@@ -57,8 +152,8 @@ async fn sql_dump_stream_from_cache(file_type: &str) -> Result<SqlDumpStream, Bo
     let url = format!("{}/{}wiki/{}/{}wiki-{}-{}.sql.gz", base_url, &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     println!("Downloading {}...", url);
 
-    let client = Client::new();
-    let mut res = client.get(&url).send().await?;
+    let client = build_wiki_compliant_client();
+    let mut res = get_with_retry(&client, &url).await?;
     let total_size = res.content_length().unwrap_or(0);
     let pb = ProgressBar::new(total_size);
     pb.set_style(ProgressStyle::default_bar()
@@ -135,8 +230,8 @@ async fn sql_dump_download_gunzipped(file_type: &str) -> Result<(), Box<dyn std:
     let url = format!("{}/{}wiki/{}/{}wiki-{}-{}.sql.gz", base_url, &*WIKI_LANG, &*WIKI_DATE, &*WIKI_LANG, &*WIKI_DATE, file_type);
     println!("Downloading {}...", url);
 
-    let client = Client::new();
-    let res = client.get(&url).send().await?;
+    let client = build_wiki_compliant_client();
+    let res = get_with_retry(&client, &url).await?;
     let total_size = res.content_length().unwrap_or(0);
     let pb = Arc::new(ProgressBar::new(total_size));
     pb.set_style(ProgressStyle::default_bar()
@@ -815,7 +910,17 @@ fn resolve_redirect(page_title_option:Option<&String>, pages_map: &FxHashMap<Str
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
-    
+
+    println!("=== Wikimedia Robot Policy Compliance ===");
+    println!("Bot name   : {}", BOT_NAME);
+    println!("Homepage   : {}", BOT_URL);
+    println!("Source     : {}", BOT_SOURCE_URL);
+    println!("Contact    : {}", BOT_CONTACT);
+    println!("Strategy   : Using Wikimedia Dumps (offline data collection)");
+    println!("Docs       : https://www.mediawiki.org/wiki/Robot_policy");
+    println!("User-Agent : https://meta.wikimedia.org/wiki/User-Agent_policy");
+    println!("===========================================\n");
+
     let total_start_time = Instant::now();
 
     let mut ctx = DumpParserContext {
