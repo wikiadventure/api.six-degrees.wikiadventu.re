@@ -206,7 +206,7 @@ async function generateDockerCompose() {
       - "traefik.enable=true"
       - "traefik.http.routers.${serviceName}.rule=${traefikRule}"
       - "traefik.http.routers.${serviceName}.entrypoints=websecure"
-      - "traefik.http.routers.${serviceName}.tls.certresolver=myresolver"
+      - "traefik.http.routers.${serviceName}.tls.certresolver=ovh"
       - "traefik.http.routers.${serviceName}.tls.domains[0].main=api.six-degrees.wikiadventu.re"
       - "traefik.http.routers.${serviceName}.tls.domains[0].sans=*.api.six-degrees.wikiadventu.re"
       - "traefik.http.routers.${serviceName}.tls.domains[1].main=metadata.api.six-degrees.wikiadventu.re"
