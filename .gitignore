@@ -12,3 +12,6 @@ cache
 target/
 rust-graph-analyzer/target
 rust-graph-types/target
+graphs
+infra/docker-compose.yml
+infra/letsencrypt
