@@ -124,7 +124,11 @@ async function generateGraph(lang: Language, date: string) {
   // We navigate to the parent repository root to execute the compiled binary.
   // const mirrorUrl = "https://ftp.acc.umu.se/mirror/wikimedia.org/dumps/";
   const mirrorUrl = "https://dumps.wikimedia.org/";
-  await $`cd .. && WIKI_DUMP_MIRROR=${mirrorUrl} WIKI_LANG=${lang} WIKI_DATE=${date} ./rust-graph-builder/target/release/rust-graph-builder`;
+  // NOTE: cargo builds into the *workspace* target dir (`../target/release`), NOT
+  // `../rust-graph-builder/target/release`, because `rust-graph-builder` is a member
+  // of the Cargo workspace defined at the repo root. Running the package-local path
+  // would execute a stale binary that predates the workspace migration.
+  await $`cd .. && WIKI_DUMP_MIRROR=${mirrorUrl} WIKI_LANG=${lang} WIKI_DATE=${date} ./target/release/rust-graph-builder`;
 }
 
 // region: Docker build & push
